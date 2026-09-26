@@ -1,7 +1,10 @@
+import pytest
+
 from app.agent.agent import agent
 from app.agent.session import ConversationManager
 
 
+@pytest.mark.live
 def test_follow_up_question_uses_context():
     manager = ConversationManager()
 
@@ -44,5 +47,4 @@ def test_follow_up_question_uses_context():
     )
 
     assert second_result["answer"]
-
     assert second_result["tools_used"]

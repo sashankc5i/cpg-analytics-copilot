@@ -66,7 +66,8 @@ class InvestigationState(TypedDict):
 # ============================================================
 
 client = Groq(
-    api_key=settings.groq_api_key
+    api_key=settings.groq_api_key,
+    max_retries=0,
 )
 
 

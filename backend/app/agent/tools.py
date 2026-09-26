@@ -18,6 +18,9 @@ from app.analytics.promotions import (
 from app.analytics.inventory import (
     get_stockout_rate,
 )
+from app.analytics.anomalies import (
+    get_revenue_anomalies,
+)
 
 
 MAX_PRODUCT_LIMIT = 50
@@ -155,6 +158,27 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_revenue_anomalies",
+            "description": (
+                "Detect unusual monthly revenue "
+                "movements using a historical "
+                "three-month baseline. Returns "
+                "only months with a significant "
+                "revenue deviation, including "
+                "actual revenue, expected revenue, "
+                "deviation percentage, direction, "
+                "and severity."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -168,6 +192,7 @@ AVAILABLE_FUNCTIONS = {
         get_customer_segment_performance,
     "get_promotion_impact": get_promotion_impact,
     "get_stockout_rate": get_stockout_rate,
+    "get_revenue_anomalies": get_revenue_anomalies,
 }
 
 
