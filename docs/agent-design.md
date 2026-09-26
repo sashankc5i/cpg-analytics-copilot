@@ -1,1094 +1,1018 @@
-# Agent Design
+# Nexa Analytics Copilot --- Agent Design
 
 ## 1. Purpose
 
-The CPG Analytics Copilot uses an LLM-powered agent to translate natural-language business questions into deterministic analytical operations.
+The agent layer is responsible for translating natural-language business
+questions into controlled analytical actions and then converting
+deterministic analytical evidence into useful business responses.
 
-The agent is designed around a simple principle:
+Nexa deliberately separates:
 
-> **The LLM determines what to investigate; deterministic analytics determine what the data actually says.**
+``` text
+LLM reasoning
+      from
+data access
+      from
+analytical calculation
+```
 
-This prevents the language model from becoming the source of truth for business metrics.
+The core principle is:
 
----
+> **The LLM is not the source of truth.**
+
+The LLM can interpret intent, select approved tools, generate
+investigation hypotheses, synthesize evidence, and challenge
+conclusions. Numerical business results are produced by deterministic
+analytics backed by the database.
+
+------------------------------------------------------------------------
 
 # 2. Agent Architecture
 
-The agent sits between the API layer and the analytics tool layer.
+The normal conversational path is:
 
-```text
-                         User
-                           │
-                           ▼
-                      FastAPI API
-                           │
-                           ▼
-                   Analytics Agent
-                           │
-                           ▼
-                     Groq LLM
-                           │
-                    Tool Selection
-                           │
-          ┌────────────────┼────────────────┐
-          ▼                ▼                ▼
-       Sales             Product         Inventory
-       Tools              Tools            Tools
-          │                │                │
-          └────────────────┼────────────────┘
-                           ▼
-                   Deterministic Data
-                           │
-                           ▼
-                      Tool Results
-                           │
-                           ▼
-                       Groq LLM
-                           │
-                    Result Synthesis
-                           │
-                           ▼
-                    Business Answer
+``` text
+User
+  │
+  ▼
+FastAPI
+  │
+  ▼
+Analytics Agent
+  │
+  ▼
+Groq
+  │
+  ├── Tool selection
+  │
+  ▼
+Approved Tool
+  │
+  ▼
+Analytics
+  │
+  ▼
+Repository
+  │
+  ▼
+SQLite
+  │
+  ▼
+Deterministic Result
+  │
+  ▼
+Groq
+  │
+  ▼
+Natural-language Response
 ```
 
----
+The agent therefore acts as an orchestration layer rather than a
+replacement for the analytics system.
 
-# 3. Agent Responsibilities
+------------------------------------------------------------------------
 
-The agent performs the following responsibilities:
+# 3. LLM Responsibilities
 
-1. Understand the user's business question.
-2. Determine whether analytics are required.
-3. Select appropriate analytics tools.
-4. Execute one or more tools.
-5. Receive deterministic results.
-6. Determine whether additional investigation is required.
-7. Synthesize the available evidence.
-8. Produce a natural-language business response.
-9. Preserve conversation context for follow-up questions.
+The LLM is responsible for tasks that benefit from language
+understanding and flexible reasoning.
 
-The agent does **not** directly calculate business metrics.
+These include:
 
----
+-   Understanding natural-language business questions
+-   Interpreting conversational context
+-   Selecting an appropriate approved tool
+-   Supplying tool arguments
+-   Interpreting structured analytical results
+-   Producing natural-language explanations
+-   Generating investigation hypotheses
+-   Synthesizing investigation evidence
+-   Challenging an existing investigation conclusion
 
-# 4. LLM Responsibilities
+The LLM is not responsible for:
 
-The Groq model is responsible for probabilistic reasoning and language understanding.
+-   Direct database access
+-   Arbitrary SQL execution
+-   Authoritative revenue calculations
+-   Authoritative anomaly calculations
+-   Replacing repository logic
+-   Inventing unavailable evidence
 
-Its responsibilities include:
+------------------------------------------------------------------------
 
-```text
-Natural Language Understanding
-          ↓
-Intent Identification
-          ↓
-Tool Selection
-          ↓
-Result Interpretation
-          ↓
-Evidence Synthesis
-          ↓
-Natural Language Generation
+# 4. System Prompt Responsibilities
+
+The agent receives a system prompt before processing the user question.
+
+The prompt establishes behavioral constraints such as:
+
+-   Data-governance expectations
+-   Tool usage
+-   Conversational context
+-   Analytical grounding
+-   Anomaly interpretation
+-   Investigation behavior
+-   Causality control
+-   Response formatting
+
+The prompt is therefore a behavioral contract between the application
+and the model.
+
+It does not replace application-level controls.
+
+------------------------------------------------------------------------
+
+# 5. Standard Analytics Agent
+
+The primary agent is implemented through:
+
+``` text
+backend/app/agent/agent.py
 ```
+
+The agent initializes the Groq client using application configuration.
+
+The current configured model is:
+
+``` text
+openai/gpt-oss-20b
+```
+
+The Groq client is configured with retries disabled:
+
+``` python
+Groq(
+    api_key=settings.groq_api_key,
+    max_retries=0,
+)
+```
+
+This keeps retry behavior explicit at the application level.
+
+------------------------------------------------------------------------
+
+# 6. Conversation Context
+
+The agent receives conversation history when available.
+
+Conceptually:
+
+``` text
+System Instructions
+       │
+       ▼
+Conversation History
+       │
+       ▼
+Current User Question
+       │
+       ▼
+Groq
+```
+
+This allows follow-up questions to refer to previous analytical context.
 
 For example:
 
-```text
+``` text
 User:
+What are our total sales?
 
-"What is our total revenue?"
+Assistant:
+[revenue result]
+
+User:
+Break that down by region.
 ```
 
-The model identifies that the question requires:
+The second question can be interpreted using the existing conversation
+context.
 
-```text
+------------------------------------------------------------------------
+
+# 7. Tool Definitions
+
+The current analytics tool catalog contains:
+
+``` text
 get_overall_sales
+get_sales_by_region
+get_monthly_sales_trend
+get_top_products
+get_sales_by_category
+get_customer_segment_performance
+get_promotion_impact
+get_stockout_rate
+get_revenue_anomalies
 ```
 
-The model does not calculate:
+These tools represent the approved analytical capabilities exposed to
+the LLM.
 
-```text
-SUM(sales_amount)
+The model does not receive a generic:
+
+``` text
+execute_sql(query)
+```
+
+tool.
+
+That distinction is deliberate.
+
+------------------------------------------------------------------------
+
+# 8. Tool Selection
+
+For each agent iteration, Groq receives:
+
+-   System prompt
+-   Conversation messages
+-   Approved tool definitions
+-   Current user request
+
+The model can either:
+
+``` text
+Return a final answer
+```
+
+or:
+
+``` text
+Request one or more approved tools
+```
+
+The application then executes the requested tools and sends their
+results back to the model.
+
+Conceptually:
+
+``` text
+                    ┌──────────────┐
+                    │     Groq     │
+                    └──────┬───────┘
+                           │
+                    tool call / answer
+                           │
+              ┌────────────┴────────────┐
+              │                         │
+         Tool requested              No tool
+              │                         │
+              ▼                         ▼
+      Execute approved tool       Final response
+              │
+              ▼
+       Tool result
+              │
+              ▼
+            Groq
+```
+
+------------------------------------------------------------------------
+
+# 9. Bounded Tool Iterations
+
+Agent execution is bounded by:
+
+``` text
+MAX_TOOL_ITERATIONS
+```
+
+This prevents an uncontrolled tool-calling loop.
+
+The configured value is obtained through application settings rather
+than being hard-coded inside the agent.
+
+If the agent exceeds the allowed number of iterations, the application
+raises an explicit runtime error.
+
+This is a reliability boundary.
+
+------------------------------------------------------------------------
+
+# 10. Tool Argument Handling
+
+Tool arguments are received from the model as JSON.
+
+The application:
+
+1.  Parses the JSON arguments.
+2.  Executes the approved tool.
+3.  Serializes the result.
+4.  Returns the result to the model as a tool message.
+
+Errors are converted into structured error results.
+
+This prevents a malformed tool call from automatically terminating the
+entire agent process.
+
+------------------------------------------------------------------------
+
+# 11. Tool Result Boundary
+
+Tool results are treated as structured evidence.
+
+Conceptually:
+
+``` text
+LLM
+ │
+ │ tool request
+ ▼
+Application
+ │
+ │ deterministic execution
+ ▼
+Tool result
+ │
+ ▼
+LLM
+```
+
+The model can interpret the returned result, but the result itself
+originates from the application's analytical layer.
+
+------------------------------------------------------------------------
+
+# 12. Analytics Layer Separation
+
+The agent does not contain business calculations.
+
+For example, the agent does not calculate:
+
+``` text
+total revenue = sum(...)
 ```
 
 itself.
 
-Instead, the analytics tool performs that calculation.
+Instead:
 
----
-
-# 5. Deterministic Analytics Boundary
-
-The system establishes a strict boundary between the LLM and business data.
-
-```text
-                  LLM
-                   │
-                   │ Tool Call
-                   ▼
-            Analytics Tool
-                   │
-                   ▼
-              SQL / Python
-                   │
-                   ▼
-                SQLite
-                   │
-                   ▼
-            Deterministic Result
-                   │
-                   ▼
-                  LLM
-                   │
-                   ▼
-             Explanation
-```
-
-This architecture provides several advantages:
-
-* business calculations remain deterministic
-* results can be independently tested
-* analytical logic is reusable
-* hallucinated metrics are reduced
-* debugging becomes easier
-* tool usage is observable
-
----
-
-# 6. Available Analytics Tools
-
-The agent currently has eight analytical capabilities.
-
-| Tool                               | Purpose                               |
-| ---------------------------------- | ------------------------------------- |
-| `get_overall_sales`                | Overall sales KPIs                    |
-| `get_sales_by_region`              | Regional performance                  |
-| `get_monthly_sales_trend`          | Monthly sales trend                   |
-| `get_top_products`                 | Top products by revenue               |
-| `get_sales_by_category`            | Category performance                  |
-| `get_customer_segment_performance` | Customer segment performance          |
-| `get_promotion_impact`             | Promotion vs non-promotion comparison |
-| `get_stockout_rate`                | Regional stockout analysis            |
-
-Each tool represents a controlled capability rather than allowing the LLM to execute arbitrary database operations.
-
----
-
-# 7. Tool Selection
-
-Tool selection is performed using the LLM's function-calling capability.
-
-The model receives:
-
-```text
-System Prompt
-+
-Conversation History
-+
-User Question
-+
-Available Tool Definitions
-```
-
-The model then decides whether a tool should be called.
-
-Conceptually:
-
-```text
-User Question
-      │
-      ▼
-     Groq
-      │
-      ├── No tool required
-      │       │
-      │       ▼
-      │    Answer
-      │
-      └── Tool required
-              │
-              ▼
-          Tool Call
-```
-
----
-
-# 8. Simple Analytical Questions
-
-Simple questions generally require one analytical tool.
-
-## Example
-
-```text
-"What is our total revenue?"
-```
-
-Expected behavior:
-
-```text
+``` text
+Agent
+  ↓
 get_overall_sales
-```
-
-Execution:
-
-```text
-User
- │
- ▼
-Groq
- │
- ▼
-get_overall_sales
- │
- ▼
+  ↓
+Analytics
+  ↓
+Repository
+  ↓
 SQLite
- │
- ▼
-Revenue
- │
- ▼
-Groq
- │
- ▼
-Answer
 ```
 
-Another example:
+This prevents model reasoning from becoming the numerical source of
+truth.
 
-```text
-"Which region performs best?"
+------------------------------------------------------------------------
+
+# 13. Repository Boundary
+
+The analytics layer communicates with repositories rather than directly
+executing database SQL.
+
+``` text
+Agent
+  ↓
+Tools
+  ↓
+Analytics
+  ↓
+Repositories
+  ↓
+SQLite
 ```
 
-maps naturally to:
-
-```text
-get_sales_by_region
-```
-
----
-
-# 9. Diagnostic Questions
-
-Some business questions require investigation rather than a single lookup.
-
-Examples:
-
-```text
-Why is revenue changing?
-
-What is driving the decline?
-
-Why is a region underperforming?
-
-What caused the sales drop?
-
-What is hurting performance?
-```
-
-For these questions, the agent should build an evidence chain.
-
----
-
-# 10. Diagnostic Investigation Pattern
-
-For a revenue diagnosis, the recommended investigation is:
-
-```text
-                 Revenue Question
-                        │
-                        ▼
-                Monthly Trend
-                        │
-                        ▼
-                 Regional Data
-                        │
-                        ▼
-                Product Data
-                        │
-                        ▼
-                Category Data
-                        │
-                        ▼
-               Promotion Data
-                        │
-                        ▼
-                Inventory Data
-                        │
-                        ▼
-                  Synthesis
-```
-
-Not every diagnostic question requires every tool.
-
-The agent should use tools that are relevant to the question.
-
----
-
-# 11. Diagnostic Reasoning Framework
-
-The agent follows this conceptual process.
-
-## Step 1 — Establish the observation
-
-Determine whether the data actually shows:
-
-* an increase
-* a decrease
-* stability
-* or no meaningful change
-
-Example:
-
-```text
-Revenue decreased from one month to another.
-```
-
-This should be based on the monthly sales tool.
-
----
-
-## Step 2 — Identify where the change occurred
-
-The agent can examine:
-
-* region
-* category
-* product
-* customer segment
-* channel/store type where supported
-
-Example:
-
-```text
-The largest revenue contribution came from the South region.
-```
-
----
-
-## Step 3 — Identify contributing products or categories
-
-The agent can examine product and category performance.
-
-Example:
-
-```text
-Several high-revenue products showed weaker performance.
-```
-
----
-
-## Step 4 — Examine promotions
-
-The agent can compare:
-
-```text
-Promotion
-vs.
-No Promotion
-```
-
-This can identify differences in:
-
-* transaction volume
-* quantity
-* revenue
-* average transaction value
-
----
-
-## Step 5 — Examine inventory
-
-The agent can inspect stockout rates.
-
-This helps determine whether periods of weak performance coincide with elevated stockout activity.
-
----
-
-## Step 6 — Synthesize
-
-The model combines the evidence into a business-oriented explanation.
-
----
-
-# 12. Causality Control
-
-The agent is explicitly instructed not to assume causality.
-
-Consider:
-
-```text
-Revenue decreased.
-Stockout rate increased.
-```
-
-This does not automatically prove:
-
-```text
-Stockouts caused the revenue decline.
-```
-
-The appropriate interpretation is:
-
-```text
-Revenue declined during a period where stockout
-rates were elevated. This suggests a possible
-relationship, but the available data does not
-establish causation.
-```
-
-This distinction is important in business analytics because observational data frequently contains correlations without controlled causal evidence.
-
----
-
-# 13. Conversation Context
-
-The agent supports multi-turn conversations.
-
-Conversation history is maintained by the session manager.
-
-Conceptually:
-
-```text
-Conversation ID
-      │
-      ▼
-Conversation History
-      │
-      ├── User Question
-      ├── Assistant Answer
-      ├── User Follow-up
-      └── Assistant Answer
-```
-
-The history is supplied to the agent along with the new user question.
-
----
-
-# 14. Follow-Up Questions
-
-Consider:
-
-```text
-User:
-Which region performs best?
-```
-
-The assistant might determine:
-
-```text
-South
-```
-
-The user can then ask:
-
-```text
-Why?
-```
-
-The second question is ambiguous in isolation.
-
-However, with conversation history:
-
-```text
-Previous topic:
-Regional performance
-
-Current question:
-Why?
-```
-
-the agent can infer that the user is asking about the previously discussed region.
-
-This is why conversation history is passed into the agent.
-
----
-
-# 15. Tool Execution Loop
-
-The agent supports iterative tool execution.
-
-Conceptually:
-
-```text
-User Question
-      │
-      ▼
-     LLM
-      │
-      ▼
-  Tool Call
-      │
-      ▼
- Tool Execution
-      │
-      ▼
- Tool Result
-      │
-      ▼
-     LLM
-      │
-      ├── Need more evidence?
-      │          │
-      │          └── Yes
-      │               │
-      │               ▼
-      │            Tool Call
-      │
-      └── No
-           │
-           ▼
-       Final Answer
-```
-
-This enables multi-tool investigations.
-
----
-
-# 16. Tool Iteration Limit
-
-The agent has a configurable maximum number of tool-calling iterations.
-
-Current configuration:
-
-```text
-MAX_TOOL_ITERATIONS = 8
-```
-
-This prevents uncontrolled loops.
-
-For example, if the model repeatedly requests tools without reaching a final answer:
-
-```text
-Tool
- ↓
-Tool
- ↓
-Tool
- ↓
-Tool
- ↓
-...
-```
-
-the agent eventually terminates with a controlled runtime error.
-
-This creates an operational safety boundary around the LLM.
-
----
-
-# 17. Tool Argument Validation
-
-The LLM does not have unlimited control over tool parameters.
-
-For example:
-
-```text
-get_top_products(limit)
-```
-
-has a defined valid range:
-
-```text
-1 <= limit <= 50
-```
-
-Invalid examples:
-
-```text
-limit = -1
-limit = 1000
-limit = "100"
-```
-
-are rejected by the tool execution layer.
-
-The architecture therefore has two validation boundaries:
-
-```text
-                User
-                  │
-                  ▼
-            API Validation
-                  │
-                  ▼
-                 LLM
-                  │
-                  ▼
-           Tool Arguments
-                  │
-                  ▼
-          Tool Validation
-                  │
-                  ▼
-             Analytics
-```
-
----
-
-# 18. Error Handling
-
-Tool failures are captured rather than silently ignored.
-
-Conceptually:
-
-```text
-Tool Call
-   │
-   ▼
-Execute Tool
-   │
-   ├── Success
-   │     │
-   │     ▼
-   │   Result
-   │
-   └── Failure
-         │
-         ▼
-     Error Result
-```
-
-The agent can then continue or return an appropriate error depending on the execution state.
-
----
-
-# 19. Prompt Design
-
-The system prompt establishes the agent's operating rules.
-
-The prompt defines:
-
-* business context
-* data governance
-* conversation behavior
-* tool usage
-* diagnostic reasoning
-* causality restrictions
-* answer structure
-
-The most important instructions are:
-
-```text
-Never invent business metrics.
-
-Never fabricate numbers.
-
-SQLite is the source of truth.
-
-Use analytics tools for business-data questions.
-
-Do not assume correlation means causation.
-```
-
----
-
-# 20. Answer Strategy
-
-The agent uses different response strategies depending on the question.
-
-## Simple Question
-
-Example:
-
-```text
-"What is our total revenue?"
-```
-
-Expected response style:
-
-```text
-Concise
-+
-Direct
-+
-Data-backed
-```
-
----
-
-## Diagnostic Question
-
-Example:
-
-```text
-"Why is revenue changing?"
-```
-
-Expected structure:
-
-```text
-1. Executive finding
-
-2. Supporting evidence
-
-3. Main contributing dimensions
-
-4. Possible explanations
-
-5. Caveat / limitation
-```
-
-This allows the same agent to support both quick business questions and deeper investigation.
-
----
-
-# 21. Grounding Strategy
-
-Grounding is achieved through architecture rather than relying solely on prompt instructions.
-
-The system uses:
-
-```text
-Natural Language
-      │
-      ▼
-     LLM
-      │
-      ▼
-Structured Tool
-      │
-      ▼
-Deterministic Data
-      │
-      ▼
-Tool Result
-      │
-      ▼
-     LLM
-      │
-      ▼
-Grounded Answer
-```
-
-This means the model receives actual business data before producing analytical conclusions.
-
----
-
-# 22. Why the LLM Does Not Generate SQL Directly
-
-The current architecture intentionally avoids giving the model unrestricted SQL access.
-
-Instead of:
-
-```text
-User
- ↓
-LLM
- ↓
-Generate SQL
- ↓
-Database
-```
-
-the system uses:
-
-```text
-User
- ↓
-LLM
- ↓
-Select Approved Tool
- ↓
-Tool
- ↓
-Controlled Query
- ↓
-Database
-```
+Repositories expose domain-specific operations such as retrieving sales
+data or product performance.
 
 This provides:
 
-* stronger control
-* predictable analytical behavior
-* simpler testing
-* reduced SQL injection surface
-* easier auditing
-* reusable analytical capabilities
+-   Data-access isolation
+-   Testability
+-   Controlled SQL
+-   Clear ownership of database behavior
+-   A migration boundary if the datastore changes later
 
-A future system could introduce a controlled semantic SQL layer, but that would require additional validation and authorization controls.
+------------------------------------------------------------------------
 
----
+# 14. Investigation Agent Architecture
 
-# 23. Agent Observability
+Investigation mode is a structured multi-stage workflow.
 
-The application records information about:
-
-* request ID
-* conversation ID
-* selected tools
-* request lifecycle
-* completion status
-* runtime failures
-
-This allows an FDE to investigate questions such as:
-
-```text
-Why did the agent choose this tool?
-
-Which tools executed?
-
-Did a tool fail?
-
-How long did the request take?
-
-Did the agent reach the iteration limit?
+``` text
+User Question
+      │
+      ▼
+Investigation Planner
+      │
+      ▼
+Investigation Plan
+      │
+      ▼
+Hypothesis Generator
+      │
+      ▼
+Hypotheses
+      │
+      ▼
+Evidence Collector
+      │
+      ▼
+Deterministic Analytics
+      │
+      ▼
+Evidence Set
+      │
+      ▼
+Synthesis
+      │
+      ▼
+Conclusion
 ```
 
-This is important because debugging an AI application requires visibility into both:
+The investigation workflow is implemented in:
 
-```text
-Application behavior
+``` text
+backend/app/agent/investigation.py
 ```
 
-and:
+------------------------------------------------------------------------
 
-```text
-Model behavior
+# 15. Investigation Catalog
+
+The investigation system uses an explicit catalog:
+
+``` text
+revenue_trend
+regional_performance
+product_performance
+category_performance
+customer_segments
+promotion_impact
+inventory_stockouts
 ```
 
----
+Each investigation area maps to an approved analytics tool.
 
-# 24. Agent Evaluation
+This creates a controlled planning boundary.
 
-The agent is evaluated separately from deterministic analytics.
-
-The evaluation framework examines:
-
-### Tool Selection
-
-Did the model select the expected analytics capability?
-
-### Groundedness
-
-Did the answer have supporting tool execution and results?
-
-### Multi-turn Behavior
-
-Did the agent use conversation context?
-
-### Safety
-
-Were invalid tool arguments rejected?
-
-### Data Integrity
-
-Did deterministic analytical results reconcile?
-
-The evaluation architecture intentionally separates live LLM evaluation from the normal automated test suite.
-
----
-
-# 25. Testing Strategy
-
-The system uses two categories of testing.
-
-## Deterministic Tests
-
-Run through Pytest.
-
-These cover:
-
-* analytics
-* data integrity
-* tool execution
-* tool safety
-* API behavior
-* conversation mechanics
-
-These tests should remain fast and repeatable.
-
----
-
-## Live LLM Evaluation
-
-Live Groq calls are used when evaluating actual model behavior.
-
-They are kept separate because LLM API calls introduce:
-
-* token consumption
-* rate limits
-* latency
-* external service dependency
-* model variability
-
-This separation prevents normal development tests from becoming dependent on an external model service.
-
----
-
-# 26. Agent Mental Model
-
-The simplest way to understand the agent is:
-
-```text
-                 ┌─────────────────┐
-                 │      User       │
-                 └────────┬────────┘
-                          │
-                          ▼
-                 ┌─────────────────┐
-                 │       LLM       │
-                 │                 │
-                 │ "What does the  │
-                 │  user need?"    │
-                 └────────┬────────┘
-                          │
-                    Tool Selection
-                          │
-                          ▼
-                 ┌─────────────────┐
-                 │      Tools      │
-                 │                 │
-                 │ "What does the  │
-                 │  data say?"     │
-                 └────────┬────────┘
-                          │
-                    Deterministic
-                       Results
-                          │
-                          ▼
-                 ┌─────────────────┐
-                 │       LLM       │
-                 │                 │
-                 │ "How should I   │
-                 │  explain this?" │
-                 └────────┬────────┘
-                          │
-                          ▼
-                 ┌─────────────────┐
-                 │ Business Answer │
-                 └─────────────────┘
-```
-
-The LLM therefore acts as:
-
-```text
-Interpreter
-+
-Orchestrator
-+
-Reasoner
-+
-Communicator
-```
-
-while the analytics layer acts as:
-
-```text
-Calculator
-+
-Data Access Layer
-+
-Business Logic
-+
-Source of Truth
-```
-
----
-
-# 27. FDE Perspective
-
-This architecture demonstrates an important Forward Deployed Engineer pattern.
-
-An FDE should not approach an enterprise AI problem as:
-
-```text
-"Where can I add an LLM?"
-```
-
-The better question is:
-
-```text
-"What part of the customer's workflow benefits
-from probabilistic reasoning, and where must
-the system remain deterministic?"
-```
-
-In this project:
-
-```text
-Business Question
+``` text
+Investigation Area
        │
        ▼
-Natural Language
+Approved Tool
        │
        ▼
-LLM Reasoning
-       │
-       ▼
-Enterprise Capability
-       │
-       ▼
-Deterministic Data
-       │
-       ▼
-Business Insight
+Deterministic Evidence
 ```
 
-The model is therefore integrated into an existing analytical architecture rather than replacing the underlying analytical system.
+------------------------------------------------------------------------
 
----
+# 16. Investigation Planning
 
-# 28. Future Agent Extensions
+The planner receives the user's investigation question and produces a
+structured plan.
 
-The current agent can be extended with additional capabilities such as:
+The planner's output is validated by the application.
 
-* forecasting
-* anomaly detection
-* customer lifetime value analysis
-* churn analysis
-* price elasticity
-* promotion optimization
-* inventory forecasting
-* semantic search
-* business-document RAG
-* external enterprise system integrations
+The application does not blindly trust arbitrary model-generated
+investigation areas.
 
-Each new capability should follow the same pattern:
+Only valid catalog entries are accepted.
 
-```text
-New Business Capability
-          │
-          ▼
-Deterministic / Controlled Implementation
-          │
-          ▼
-Tool Definition
-          │
-          ▼
-Agent Tool Selection
-          │
-          ▼
-Grounded Business Response
+This prevents the model from dynamically inventing unsupported evidence
+domains.
+
+------------------------------------------------------------------------
+
+# 17. Hypothesis Generation
+
+The hypothesis generator creates possible explanations that can be
+investigated.
+
+For example:
+
+``` text
+Question:
+Why is revenue changing?
+
+Possible investigation hypotheses:
+
+H1:
+Revenue change may be driven by product mix.
+
+H2:
+Revenue change could result from regional fluctuations.
+
+H3:
+Revenue change might be linked to customer-segment changes.
+
+H4:
+Revenue change may be influenced by promotions.
+
+H5:
+Revenue change could stem from inventory stockouts.
 ```
 
-This allows the agent to grow without turning the LLM into an uncontrolled execution layer.
+These are hypotheses, not established facts.
 
----
+Each hypothesis is associated with evidence areas.
 
-# 29. Summary
+The purpose is to organize investigation, not to declare causality
+before evidence is collected.
 
-The CPG Analytics Copilot agent is intentionally designed as a controlled orchestration layer.
+------------------------------------------------------------------------
 
-Its core architecture is:
+# 18. Evidence Collection
 
-```text
-User
- ↓
-LLM
- ↓
-Tool Selection
- ↓
-Controlled Analytics
- ↓
-Deterministic Results
- ↓
+The evidence collector maps investigation areas to deterministic tools.
+
+For example:
+
+``` text
+revenue_trend
+      ↓
+get_monthly_sales_trend
+
+regional_performance
+      ↓
+get_sales_by_region
+
+product_performance
+      ↓
+get_top_products
+
+category_performance
+      ↓
+get_sales_by_category
+
+customer_segments
+      ↓
+get_customer_segment_performance
+
+promotion_impact
+      ↓
+get_promotion_impact
+
+inventory_stockouts
+      ↓
+get_stockout_rate
+```
+
+The evidence collector executes these tools and stores the resulting
+structured evidence.
+
+------------------------------------------------------------------------
+
+# 19. Evidence as the Source for Synthesis
+
+The synthesis stage receives collected evidence.
+
+Conceptually:
+
+``` text
+Question
+   │
+   ▼
+Plan
+   │
+   ▼
+Hypotheses
+   │
+   ▼
+Evidence
+   │
+   ▼
 LLM Synthesis
- ↓
-Business Answer
 ```
 
-The most important design principle is:
+The synthesis model is instructed to distinguish:
 
-> **The LLM decides what to investigate. The data and analytics layer decide what is true.**
+``` text
+Observed evidence
+        from
+Interpretation
+        from
+Possible explanation
+```
 
-This separation provides the foundation for a more reliable, testable, observable, and extensible enterprise AI application.
+This is particularly important for business questions that contain
+causal language.
+
+------------------------------------------------------------------------
+
+# 20. Causality Control
+
+Nexa should not automatically convert correlation into causation.
+
+For example:
+
+``` text
+Promotion activity increased
+AND
+Product sales increased
+```
+
+supports an observed relationship.
+
+It does not by itself prove:
+
+``` text
+Promotion caused the entire sales increase.
+```
+
+The investigation prompts therefore encourage evidence-based language
+and alternative explanations.
+
+------------------------------------------------------------------------
+
+# 21. Challenge My Conclusion
+
+Challenge mode is deliberately different from the original
+investigation.
+
+It starts from:
+
+``` text
+Completed Investigation
+        │
+        ├── Original conclusion
+        └── Existing evidence
+```
+
+and sends that context to a direct challenge reviewer.
+
+Architecture:
+
+``` text
+Completed Investigation
+        │
+        ▼
+Challenge Reviewer
+        │
+        ▼
+One bounded Groq synthesis call
+        │
+        ▼
+Challenge Report
+```
+
+The challenge report considers:
+
+-   Supporting evidence
+-   Contradicting or limiting evidence
+-   Missing evidence
+-   Alternative explanations
+-   Bottom line
+
+------------------------------------------------------------------------
+
+# 22. Why Challenge Reuses Existing Evidence
+
+The challenge workflow does not launch another complete investigation.
+
+This avoids:
+
+-   Duplicate evidence collection
+-   Unnecessary tool calls
+-   Re-running the planner
+-   Re-generating the same hypotheses
+-   Increasing latency without a clear benefit
+
+Instead, Challenge acts as an adversarial review of the investigation
+that already happened.
+
+This gives the feature a clear responsibility:
+
+> **Stress-test the existing conclusion rather than produce a second
+> unrelated analysis.**
+
+------------------------------------------------------------------------
+
+# 23. Challenge Output Controls
+
+Challenge synthesis is bounded by:
+
+``` text
+MAX_CHALLENGE_SYNTHESIS_TOKENS = 900
+```
+
+Evidence supplied to the challenge context is also bounded.
+
+The implementation limits:
+
+-   Evidence rows per investigation
+-   Evidence digest size
+-   Maximum synthesis output
+
+The challenge uses:
+
+``` text
+temperature = 0
+```
+
+and disables additional model reasoning output.
+
+These controls help keep the challenge workflow predictable and compact.
+
+------------------------------------------------------------------------
+
+# 24. Anomaly Detection
+
+Revenue anomaly detection is deterministic and implemented outside the
+LLM.
+
+The anomaly engine:
+
+``` text
+Monthly revenue
+      ↓
+Previous 3 months
+      ↓
+Historical mean
+      ↓
+Current month deviation
+      ↓
+Classification
+```
+
+Constants include:
+
+``` text
+MIN_HISTORY_MONTHS = 3
+
+LOW_ANOMALY_THRESHOLD = 10%
+
+MEDIUM_ANOMALY_THRESHOLD = 20%
+
+HIGH_ANOMALY_THRESHOLD = 30%
+```
+
+The current synthetic revenue series does not produce non-normal
+anomalies under these thresholds.
+
+This means the model does not decide whether a number is anomalous.
+
+The deterministic analytics engine does.
+
+------------------------------------------------------------------------
+
+# 25. Anomaly → Investigation Relationship
+
+Anomaly detection can be used as an analytical signal.
+
+The conceptual relationship is:
+
+``` text
+Anomaly detected
+       │
+       ▼
+Potential investigation trigger
+       │
+       ▼
+Investigate contributing dimensions
+```
+
+However, an anomaly is not automatically treated as a causal
+explanation.
+
+It is a signal that warrants further investigation.
+
+------------------------------------------------------------------------
+
+# 26. Conversation Memory
+
+Conversation memory is separated into two related concepts.
+
+### Conversation memory
+
+Managed by:
+
+``` text
+ConversationManager
+```
+
+It stores:
+
+-   Conversation ID
+-   Title
+-   Created timestamp
+-   Updated timestamp
+-   Archive state
+-   Message history
+
+### Investigation memory
+
+Managed by:
+
+``` text
+InvestigationSessionManager
+```
+
+It stores:
+
+-   Investigation history
+-   Latest plan
+-   Latest evidence
+-   Latest answer
+
+The two systems share the same conversation identity at the
+API/application level.
+
+------------------------------------------------------------------------
+
+# 27. Shared Conversation Identity
+
+Copilot, Investigation, and Challenge operate within the same
+conversation context.
+
+``` text
+                  conversation_id
+                        │
+          ┌─────────────┼─────────────┐
+          ▼             ▼             ▼
+       Copilot    Investigation    Challenge
+```
+
+This allows a user to move from:
+
+``` text
+Question
+  ↓
+Follow-up
+  ↓
+Investigation
+  ↓
+Conclusion
+  ↓
+Challenge
+```
+
+without creating separate unrelated conversations.
+
+------------------------------------------------------------------------
+
+# 28. Agent Error Handling
+
+The agent handles tool execution errors by creating structured error
+results.
+
+Conceptually:
+
+``` text
+Tool request
+     │
+     ▼
+Execution
+     │
+ ┌───┴────┐
+ │        │
+Success   Error
+ │        │
+ ▼        ▼
+Result   Error object
+ │        │
+ └───┬────┘
+     ▼
+    Groq
+```
+
+This provides the model with explicit information about tool failures
+rather than silently hiding them.
+
+------------------------------------------------------------------------
+
+# 29. Security Boundaries
+
+The agent architecture deliberately avoids unrestricted model access.
+
+The LLM cannot directly:
+
+-   Execute arbitrary SQL
+-   Open a database connection
+-   Modify database schema
+-   Choose arbitrary tables outside the approved tool layer
+-   Retrieve unlimited result sets
+
+The model is therefore operating inside a capability boundary defined by
+the application.
+
+------------------------------------------------------------------------
+
+# 30. Reliability Boundaries
+
+The current implementation includes several controls.
+
+### Bounded agent iterations
+
+Prevents indefinite tool-calling loops.
+
+### Bounded product results
+
+Top-product operations enforce a maximum result limit.
+
+### Bounded challenge synthesis
+
+Challenge evidence and output are size-limited.
+
+### Deterministic calculations
+
+Important numerical calculations are kept outside model reasoning.
+
+### Structured validation
+
+Investigation plans and hypotheses are validated before downstream
+execution.
+
+------------------------------------------------------------------------
+
+# 31. Agent Design Mental Model
+
+The easiest way to understand Nexa's agent architecture is:
+
+``` text
+              LLM
+               │
+       "What does the user want?"
+               │
+               ▼
+          Tool Selection
+               │
+               ▼
+       "What evidence do we need?"
+               │
+               ▼
+       Deterministic Analytics
+               │
+               ▼
+       "What does the evidence say?"
+               │
+               ▼
+          LLM Synthesis
+               │
+               ▼
+        Business Response
+```
+
+For investigation:
+
+``` text
+Question
+   ↓
+Plan
+   ↓
+Hypotheses
+   ↓
+Evidence
+   ↓
+Synthesis
+   ↓
+Challenge
+```
+
+The important architectural boundary is that the model controls
+**interpretation and orchestration**, while the application controls
+**data access and deterministic computation**.
+
+------------------------------------------------------------------------
+
+# 32. Agent Design Summary
+
+Nexa's agent architecture demonstrates a controlled AI-to-data
+integration pattern:
+
+``` text
+Natural Language
+       ↓
+LLM
+       ↓
+Approved Capabilities
+       ↓
+Deterministic Analytics
+       ↓
+Repositories
+       ↓
+Database
+       ↓
+Evidence
+       ↓
+LLM
+       ↓
+Natural Language
+```
+
+This design provides a practical balance between the flexibility of an
+LLM and the reliability required for business analytics.
+
+The model is useful because it understands language and can reason over
+evidence.
+
+The application remains authoritative because it controls:
+
+-   Tools
+-   Data access
+-   Business calculations
+-   Evidence generation
+-   Validation
+-   Execution limits
+-   Conversation state

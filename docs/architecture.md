@@ -1,1148 +1,987 @@
-# System Architecture
+# Nexa Analytics Copilot --- Architecture
 
-## 1. Overview
+## 1. Purpose
 
-**CPG Analytics Copilot** is an enterprise-style AI analytics application designed to help business users investigate Consumer Packaged Goods (CPG) performance using natural language.
+Nexa Analytics Copilot is an enterprise-style conversational analytics
+application for a fictional CPG organization.
 
-The system combines:
+The architecture is designed around a clear separation between:
 
-* React + TypeScript for the user interface
-* FastAPI for the application API
-* Groq for natural-language reasoning and tool selection
-* SQLite as the structured data store
-* SQL and Python for deterministic analytics
-* Plotly for analytical visualizations
-* Pytest for automated testing
+-   User interaction
+-   API orchestration
+-   LLM reasoning
+-   Approved analytical capabilities
+-   Business analytics
+-   Database access
+-   Persistent analytical data
 
-The core architectural principle is:
+The central architectural principle is:
 
-> **The LLM is not the source of truth. Deterministic analytics systems are.**
+> **The LLM is not the source of truth.**
 
-The LLM is responsible for understanding the user's intent, selecting appropriate analytics capabilities, interpreting returned results, and communicating insights.
+The database and deterministic analytics code provide the authoritative
+numerical evidence. The LLM interprets user intent, selects approved
+capabilities, interprets returned evidence, and produces a
+natural-language response.
 
-Business metrics are calculated by deterministic SQL/Python components.
+------------------------------------------------------------------------
 
----
+## 2. High-Level Architecture
 
-# 2. High-Level Architecture
+``` text
+┌──────────────────────────────────────────────────────────────┐
+│                         FRONTEND                             │
+│                                                              │
+│                  React + TypeScript + Vite                   │
+│                                                              │
+│  ┌──────────────┐  ┌────────────────┐  ┌─────────────────┐ │
+│  │   Copilot    │  │  Investigation │  │ Conversation UI │ │
+│  └──────────────┘  └────────────────┘  └─────────────────┘ │
+└────────────────────────────┬─────────────────────────────────┘
+                             │
+                             │ REST / Streaming
+                             ▼
+┌──────────────────────────────────────────────────────────────┐
+│                         BACKEND                              │
+│                                                              │
+│                       FastAPI API                            │
+│                                                              │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │                  Agent / Workflow Layer                │  │
+│  │                                                        │  │
+│  │  Analytics Agent                                      │  │
+│  │  Investigation Planner                                 │  │
+│  │  Hypothesis Generator                                  │  │
+│  │  Challenge Reviewer                                    │  │
+│  │  Conversation Management                               │  │
+│  └───────────────────────────┬────────────────────────────┘  │
+│                              │                               │
+│                              ▼                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │                    Tool Layer                          │  │
+│  │                                                        │  │
+│  │  Sales / Product / Customer / Promotion / Inventory    │  │
+│  │  Analytics Tools                                       │  │
+│  └───────────────────────────┬────────────────────────────┘  │
+│                              │                               │
+│                              ▼                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │                  Analytics Layer                       │  │
+│  │                                                        │  │
+│  │  Business calculations                                 │  │
+│  │  Trend analysis                                        │  │
+│  │  Anomaly detection                                     │  │
+│  │  Investigation evidence                                │  │
+│  └───────────────────────────┬────────────────────────────┘  │
+│                              │                               │
+│                              ▼                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │                 Repository Layer                       │  │
+│  │                                                        │  │
+│  │  Approved domain-specific database operations           │  │
+│  └───────────────────────────┬────────────────────────────┘  │
+└──────────────────────────────┼───────────────────────────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │       SQLite        │
+                    │                     │
+                    │ customers           │
+                    │ products            │
+                    │ stores              │
+                    │ sales               │
+                    │ promotions          │
+                    │ inventory           │
+                    └─────────────────────┘
 
-```text
-                         ┌──────────────────────┐
-                         │       React          │
-                         │    TypeScript UI     │
-                         │                      │
-                         │  Chat + Visualization│
-                         └──────────┬───────────┘
-                                    │
-                                    │ HTTP / REST
-                                    ▼
-                         ┌──────────────────────┐
-                         │       FastAPI        │
-                         │      API Layer       │
-                         │                      │
-                         │ Validation           │
-                         │ Request IDs          │
-                         │ Error Handling       │
-                         │ Response Contracts   │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │    Analytics Agent   │
-                         │                      │
-                         │ Conversation Context │
-                         │ Tool Orchestration   │
-                         │ Reasoning            │
-                         └──────────┬───────────┘
-                                    │
-                                    │ Tool Calls
-                                    ▼
-                         ┌──────────────────────┐
-                         │       Groq LLM       │
-                         │                      │
-                         │ Intent Understanding │
-                         │ Tool Selection       │
-                         │ Result Synthesis     │
-                         └──────────┬───────────┘
-                                    │
-                                    │
-              ┌─────────────────────┼─────────────────────┐
-              │                     │                     │
-              ▼                     ▼                     ▼
-       ┌─────────────┐       ┌─────────────┐       ┌─────────────┐
-       │ SQL         │       │ Python      │       │ Visualization│
-       │ Analytics   │       │ Analytics   │       │ Builder      │
-       └──────┬──────┘       └──────┬──────┘       └─────────────┘
-              │                     │
-              ▼                     ▼
-       ┌─────────────────────────────────────┐
-       │              SQLite                 │
-       │                                     │
-       │ Customers                           │
-       │ Products                            │
-       │ Stores                              │
-       │ Sales                               │
-       │ Promotions                          │
-       │ Inventory                           │
-       └─────────────────────────────────────┘
+                         ┌─────────────┐
+                         │    Groq     │
+                         │    LLM      │
+                         └──────┬──────┘
+                                │
+                    Reasoning / tool selection /
+                    synthesis / challenge review
 ```
 
----
+------------------------------------------------------------------------
 
 # 3. Architectural Layers
 
-The application is divided into the following logical layers:
+## 3.1 Frontend Layer
 
-```text
-Presentation Layer
-        ↓
-API Layer
-        ↓
-Agent / Orchestration Layer
-        ↓
-Analytics Tool Layer
-        ↓
-Data Layer
-```
+### Technology
 
-Cross-cutting concerns surround these layers:
+-   React
+-   TypeScript
+-   Vite
+-   Plotly / `react-plotly.js`
 
-```text
-Configuration
-Logging
-Validation
-Error Handling
-Testing
-Observability
-```
-
----
-
-# 4. Presentation Layer
-
-## Technology
-
-* React
-* TypeScript
-* Vite
-* Axios
-* Plotly
-
-## Responsibilities
+### Responsibilities
 
 The frontend is responsible for:
 
-* collecting user questions
-* maintaining the local chat display
-* showing loading states
-* displaying errors
-* rendering assistant responses
-* displaying tool usage information
-* rendering analytical visualizations
-
-The frontend does **not** perform business calculations.
-
-For example, the frontend does not calculate:
-
-```text
-Revenue
-=
-SUM(sales_amount)
-```
-
-Instead, the backend returns deterministic analytical results and the frontend renders them.
-
----
-
-# 5. API Layer
-
-## Technology
-
-FastAPI.
-
-The API acts as the boundary between the frontend and backend application.
-
-Primary endpoints:
-
-```text
-GET  /health
-GET  /readiness
-POST /api/chat
-```
-
-## Responsibilities
-
-The API layer handles:
-
-* HTTP requests
-* request validation
-* CORS
-* request IDs
-* exception handling
-* response validation
-* conversation/session routing
-
-The API does not contain the core business analytics logic.
-
----
-
-# 6. Request Lifecycle
-
-A typical request follows this flow:
-
-```text
-User
- │
- │ "Why is revenue changing?"
- ▼
-React
- │
- │ POST /api/chat
- ▼
-FastAPI
- │
- ├── Validate request
- │
- ├── Generate request ID
- │
- ├── Load conversation history
- │
- ▼
-Analytics Agent
- │
- ▼
-Groq
- │
- │ Determine required tools
- ▼
-Analytics Tools
- │
- ├── Monthly Sales
- ├── Regional Sales
- ├── Product Performance
- ├── Category Performance
- ├── Promotion Impact
- └── Inventory Performance
- │
- ▼
-SQLite / Python Analytics
- │
- ▼
-Deterministic Results
- │
- ▼
-Groq
- │
- │ Synthesize evidence
- ▼
-Analytics Agent
- │
- ▼
-FastAPI
- │
- ├── Build visualization
- ├── Validate response
- └── Return structured response
- │
- ▼
-React
- │
- ├── Render answer
- └── Render chart
-```
-
----
-
-# 7. Agent Layer
-
-The agent is the central orchestration component.
-
-## Responsibilities
-
-The agent is responsible for:
-
-1. Understanding the user's question.
-2. Determining whether analytics tools are required.
-3. Selecting appropriate tools.
-4. Executing tools.
-5. Passing tool results back to the LLM.
-6. Supporting multi-tool investigations.
-7. Using conversation context.
-8. Synthesizing grounded business explanations.
-
-The agent is **not responsible for calculating business metrics**.
-
----
-
-# 8. LLM Responsibilities
-
-Groq is used as the reasoning and language layer.
-
-The model performs:
-
-```text
-Natural Language Understanding
-            ↓
-Intent Identification
-            ↓
-Tool Selection
-            ↓
-Result Interpretation
-            ↓
-Evidence Synthesis
-            ↓
-Natural Language Response
-```
-
-The model does not directly query SQLite.
-
-Instead:
-
-```text
-User
- ↓
-LLM
- ↓
-Tool
- ↓
-SQLite / Python
- ↓
-Result
- ↓
-LLM
- ↓
-Answer
-```
-
-This creates a controlled boundary between probabilistic reasoning and deterministic computation.
-
----
-
-# 9. Tool Layer
-
-The agent exposes specialized analytics capabilities.
-
-## Available Tools
-
-| Tool                               | Responsibility                                                      |
-| ---------------------------------- | ------------------------------------------------------------------- |
-| `get_overall_sales`                | Overall revenue, transactions, units, and average transaction value |
-| `get_sales_by_region`              | Regional sales performance                                          |
-| `get_monthly_sales_trend`          | Monthly sales trends                                                |
-| `get_top_products`                 | Top products by revenue                                             |
-| `get_sales_by_category`            | Category-level performance                                          |
-| `get_customer_segment_performance` | Customer segment performance                                        |
-| `get_promotion_impact`             | Promotion vs non-promotion comparison                               |
-| `get_stockout_rate`                | Regional stockout rates                                             |
-
-Each tool represents a controlled analytical capability.
-
-The LLM cannot arbitrarily execute SQL.
-
----
-
-# 10. Simple Tool Execution
-
-For a simple question:
-
-```text
-"What is our total revenue?"
-```
-
-the expected flow is:
-
-```text
-User Question
-      ↓
-Groq
-      ↓
-get_overall_sales
-      ↓
-SQLite
-      ↓
-Revenue Result
-      ↓
-Groq
-      ↓
-Business Answer
-```
-
-This keeps the analytical computation deterministic.
-
----
-
-# 11. Multi-Tool Diagnostic Workflow
-
-Some questions cannot be answered reliably using a single metric.
-
-For example:
-
-```text
-"Why is revenue changing?"
-```
-
-The agent can investigate several dimensions.
-
-```text
-                Revenue Change
-                      │
-        ┌─────────────┼─────────────┐
-        │             │             │
-        ▼             ▼             ▼
-     Trend         Region        Products
-        │             │             │
-        └─────────────┼─────────────┘
-                      │
-          ┌───────────┼───────────┐
-          ▼           ▼           ▼
-       Category   Promotions   Inventory
-          │           │           │
-          └───────────┼───────────┘
-                      ▼
-                 Evidence
-                      │
-                      ▼
-                 Synthesis
-```
-
-The agent is instructed to:
-
-1. Determine whether a measurable change exists.
-2. Identify where the change occurred.
-3. Identify products/categories contributing to it.
-4. Examine promotion behavior.
-5. Examine inventory/stockout behavior.
-6. Synthesize the evidence.
-7. Distinguish facts from possible explanations.
-
----
-
-# 12. Causality Boundary
-
-The system deliberately separates correlation from causation.
-
-For example, the system should not automatically conclude:
-
-```text
-Stockouts caused the revenue decline.
-```
-
-when the available data only shows:
-
-```text
-Revenue declined
-+
-Stockout rates increased
-```
-
-Instead, the system should communicate:
-
-```text
-Revenue declined during periods with elevated
-stockout rates. This suggests a possible
-relationship, but the available data does not
-establish causation.
-```
-
-This prevents unsupported causal claims.
-
----
-
-# 13. Data Layer
-
-SQLite is the current system of record.
-
-The database contains six primary tables:
-
-```text
-Customers
-Products
-Stores
-Sales
-Promotions
-Inventory
-```
-
-The transactional center of the model is the `sales` table.
-
-```text
-Customers ──────┐
-                │
-Products ───────┼──→ Sales
-                │
-Stores ─────────┘
-
-Products ───────→ Promotions
-Stores ─────────→ Promotions
-
-Products ───────→ Inventory
-Stores ─────────→ Inventory
-```
-
----
-
-# 14. Analytics Layer
-
-The analytics layer is intentionally deterministic.
-
-It consists primarily of:
-
-* SQL
-* Python
-* Pandas
-* NumPy
-
-Examples include:
-
-```text
-SUM(sales_amount)
-GROUP BY region
-GROUP BY category
-GROUP BY customer_segment
-Monthly aggregation
-Promotion comparison
-Stockout rate calculation
-```
-
-The analytics layer can therefore be tested independently of the LLM.
-
----
-
-# 15. Visualization Architecture
-
-Visualization follows the same separation principle.
-
-The backend determines:
-
-```text
-What data should be visualized?
-What chart type is appropriate?
-What labels/data should be provided?
-```
-
-The frontend determines:
-
-```text
-How the chart is rendered.
-```
-
-The flow is:
-
-```text
-Analytics Tool
-      ↓
-Tool Result
-      ↓
-Visualization Builder
-      ↓
-Visualization Configuration
-      ↓
-FastAPI Response
-      ↓
-React
-      ↓
-Plotly
-```
-
-For example:
-
-```text
-get_monthly_sales_trend
-          ↓
-Visualization Builder
-          ↓
-type = line
-x = months
-y = revenue
-          ↓
-React Plotly
-```
-
----
-
-# 16. Conversation Architecture
-
-Conversation state is currently maintained through an in-memory session manager.
-
-```text
-conversation_id
-       │
-       ▼
-ConversationManager
-       │
-       ├── User message
-       ├── Assistant response
-       ├── User message
-       └── Assistant response
-```
-
-This enables follow-up questions such as:
-
-```text
-User:
-Which region performs best?
-
-Assistant:
-South performs best...
-
-User:
-Why?
-```
-
-The second question can use the previous conversation context.
-
-## Production Evolution
-
-The current in-memory implementation can later be replaced by:
-
-```text
-Conversation API
-      ↓
-Redis / persistent session store
-```
-
-without changing the core agent architecture.
-
----
-
-# 17. Configuration Architecture
-
-Configuration is centralized through Pydantic Settings.
-
-```text
-Environment Variables
-        │
-        ▼
-    config.py
-        │
-        ├── Groq API Key
-        ├── Groq Model
-        ├── Tool Iteration Limit
-        ├── CORS Origins
-        ├── Application Name
-        └── Application Version
-```
-
-Application components consume configuration through the settings layer instead of reading environment variables independently.
-
-This makes the system easier to configure across:
-
-```text
-Development
-Testing
-Staging
-Production
-```
-
----
-
-# 18. Logging and Request Tracing
-
-Every HTTP request receives a unique request ID.
-
-```text
-Request
-   │
-   ▼
-Request ID
-   │
-   ├── API Log
-   ├── Agent Log
-   ├── Tool Execution
-   └── Completion Log
-```
-
-The request ID is also returned through:
-
-```text
-X-Request-ID
-```
-
-This provides a basic correlation mechanism for debugging.
-
-Example:
-
-```text
-request_id=abc123
-```
-
-can be used to correlate:
-
-```text
-request_started
-chat_request
-chat_completed
-request_completed
-```
-
----
-
-# 19. Error Handling
-
-The system separates common failure boundaries.
-
-```text
-Invalid Request
-      ↓
-HTTP 400
-
-Runtime Failure
-      ↓
-HTTP 500
-
-Service Not Ready
-      ↓
-HTTP 503
-```
-
-Tool execution errors are captured by the agent and returned as structured tool results rather than silently disappearing.
-
-The application also limits agent tool-calling iterations to prevent runaway execution.
-
----
-
-# 20. Input Validation
-
-The API validates user input before it reaches the agent.
-
-Current boundaries include:
-
-```text
-message
- ├── minimum length
- └── maximum length
-
-conversation_id
- ├── minimum length
- └── maximum length
-```
-
-Tool arguments are also validated.
-
-For example:
-
-```text
-get_top_products(limit)
-```
-
-only accepts:
-
-```text
-1 <= limit <= 50
-```
-
-This creates two validation boundaries:
-
-```text
-User
- ↓
-API Validation
- ↓
-Agent
- ↓
-Tool Validation
- ↓
-Analytics
-```
-
----
-
-# 21. Agent Reliability
-
-The agent has a maximum number of tool-calling iterations.
-
-```text
-MAX_TOOL_ITERATIONS = 8
-```
-
-This protects against an agent entering an uncontrolled loop.
-
-The execution pattern is:
-
-```text
-LLM
- ↓
-Tool Call
- ↓
-Tool Result
- ↓
-LLM
- ↓
-Tool Call
- ↓
-Tool Result
- ↓
-...
- ↓
-Final Answer
-```
-
-If the iteration limit is exceeded, the agent raises a controlled runtime error.
-
----
-
-# 22. API Response Contract
-
-The API uses a Pydantic response model.
+-   Rendering the conversational interface
+-   Sending user questions to the backend
+-   Maintaining the active conversation identity
+-   Displaying conversation history
+-   Switching between Copilot and Investigation workspaces
+-   Displaying investigation progress
+-   Displaying challenge responses
+-   Rendering tables and visualizations
+-   Managing conversation actions such as rename, archive, restore, and
+    delete
+
+The frontend does **not** perform analytical calculations.
+
+It receives structured results from the backend and presents them to the
+user.
+
+------------------------------------------------------------------------
+
+# 4. API Layer
+
+The backend uses FastAPI as the application boundary between the
+frontend and the internal AI/analytics services.
+
+Responsibilities include:
+
+-   Request validation
+-   Conversation lifecycle endpoints
+-   Chat orchestration
+-   Investigation streaming
+-   Challenge streaming
+-   Error handling
+-   Request logging
+-   Middleware-level request tracking
+
+The API layer should remain independent of the internal implementation
+of analytics and database access.
 
 Conceptually:
 
-```text
-ChatResponse
- ├── answer
- ├── tools_used
- ├── tool_results
- ├── visualization
- └── conversation_id
+``` text
+Frontend
+   │
+   ▼
+FastAPI
+   │
+   ├── Conversation APIs
+   ├── Chat API
+   ├── Investigation API
+   └── Challenge API
 ```
 
-This ensures the frontend receives a predictable response structure.
+------------------------------------------------------------------------
 
-The contract also provides a clear boundary between backend and frontend teams.
+# 5. Agent Layer
 
----
+The agent layer is responsible for translating natural-language business
+questions into controlled analytical actions.
 
-# 23. Health and Readiness
+The primary analytics agent uses Groq with the configured model:
 
-The application exposes two operational endpoints.
-
-## Health
-
-```text
-GET /health
+``` text
+openai/gpt-oss-20b
 ```
 
-Answers:
+The agent receives:
 
-> Is the application process alive?
+-   System instructions
+-   Conversation history
+-   Current user question
+-   Approved tool definitions
 
-## Readiness
+The agent can select only tools exposed through the tool layer.
 
-```text
-GET /readiness
+------------------------------------------------------------------------
+
+## 5.1 Standard Copilot Flow
+
+``` text
+User Question
+      │
+      ▼
+Analytics Agent
+      │
+      ├── No tool required ───────────────► Natural-language answer
+      │
+      └── Tool required
+              │
+              ▼
+        Approved Tool
+              │
+              ▼
+          Analytics
+              │
+              ▼
+         Repository
+              │
+              ▼
+           SQLite
+              │
+              ▼
+      Deterministic Result
+              │
+              ▼
+        Analytics Agent
+              │
+              ▼
+       Final Response
 ```
 
-Answers:
+This keeps the LLM involved in reasoning without allowing it to directly
+manipulate the database.
 
-> Is the application sufficiently configured to serve requests?
+------------------------------------------------------------------------
 
-This distinction becomes important when the application is eventually deployed to a containerized environment.
+# 6. Tool Layer
 
----
+The tool layer defines the capabilities available to the LLM.
 
-# 24. Testing Architecture
+Current analytical tools include:
 
-Testing is divided into deterministic and LLM-dependent evaluation.
+-   `get_overall_sales`
+-   `get_sales_by_region`
+-   `get_monthly_sales_trend`
+-   `get_top_products`
+-   `get_sales_by_category`
+-   `get_customer_segment_performance`
+-   `get_promotion_impact`
+-   `get_stockout_rate`
+-   `get_revenue_anomalies`
 
-```text
-                    Testing
-                       │
-          ┌────────────┴────────────┐
-          │                         │
-    Deterministic Tests       Live LLM Evaluation
-          │                         │
-          ▼                         ▼
-       Pytest                 Explicit benchmark
-          │                         │
-          ├── Analytics             ├── Tool selection
-          ├── Safety                ├── Groundedness
-          ├── Integrity             ├── Reasoning
-          ├── Conversation          └── Model behavior
-          └── API
+The tool layer acts as a controlled capability boundary.
+
+The LLM does not receive unrestricted database access.
+
+------------------------------------------------------------------------
+
+## 6.1 Tool Execution Boundary
+
+``` text
+                 LLM
+                  │
+                  ▼
+          Tool selection
+                  │
+                  ▼
+        execute_tool(...)
+                  │
+                  ▼
+           Analytics API
+                  │
+                  ▼
+            Repository
+                  │
+                  ▼
+             Database
 ```
 
-Normal `pytest` execution does not depend on repeated live LLM calls.
+Tool arguments are validated before execution.
 
-This prevents:
+For example, product-ranking operations enforce a bounded maximum result
+size.
 
-* rate-limit failures
-* unnecessary token consumption
-* slow test execution
-* nondeterministic CI behavior
+This prevents the model from requesting arbitrarily large analytical
+results.
 
-Live LLM evaluation is intentionally treated as a separate activity.
+------------------------------------------------------------------------
 
----
+# 7. Analytics Layer
 
-# 25. Evaluation Architecture
+The analytics layer contains business and analytical logic.
 
-The evaluation framework measures several dimensions.
+Examples include:
 
-## Tool Selection
+-   Revenue aggregation
+-   Regional sales analysis
+-   Product ranking
+-   Category analysis
+-   Customer segment performance
+-   Promotion impact analysis
+-   Inventory stockout analysis
+-   Revenue anomaly detection
 
-Does the agent choose the correct analytical capability?
+The analytics layer should not be responsible for low-level database
+connection management.
 
-## Groundedness
+Instead:
 
-Does the answer have supporting tool execution and results?
+``` text
+Analytics
+    │
+    ▼
+Repository
+```
 
-## Data Integrity
+This separation allows analytical logic to be tested independently from
+database mechanics.
 
-Do dimensional results reconcile with overall totals?
+------------------------------------------------------------------------
+
+# 8. Repository Layer
+
+The repository layer is the application's database access boundary.
+
+Current repositories include:
+
+``` text
+sales_repository.py
+product_repository.py
+customer_repository.py
+promotion_repository.py
+inventory_repository.py
+```
+
+Repositories expose approved, domain-specific operations.
+
+They do not expose arbitrary SQL execution to the agent or analytics
+layers.
+
+------------------------------------------------------------------------
+
+## 8.1 Why the Repository Boundary Exists
+
+Without a repository boundary, SQL can become distributed throughout:
+
+``` text
+Agent
+Analytics
+Tools
+API
+```
+
+That makes the system harder to test and harder to migrate to another
+database technology.
+
+Instead, Nexa uses:
+
+``` text
+Agent
+  ↓
+Tools
+  ↓
+Analytics
+  ↓
+Repositories
+  ↓
+Database
+```
+
+The result is a clearer separation of concerns.
+
+------------------------------------------------------------------------
+
+## 8.2 Parameterized SQL
+
+Dynamic SQL values are passed through parameterized database operations.
+
+This prevents application code from constructing unsafe SQL through
+direct string interpolation of user-controlled values.
+
+The repository layer is therefore both a structural and security
+boundary.
+
+------------------------------------------------------------------------
+
+# 9. Database Layer
+
+SQLite is used as the current analytical datastore.
+
+Primary tables:
+
+``` text
+customers
+products
+stores
+sales
+promotions
+inventory
+```
+
+The database schema also includes indexes supporting common analytical
+access patterns such as:
+
+-   Sales by date
+-   Sales by product
+-   Sales by store
+-   Sales by customer
+-   Inventory by product/store
+-   Inventory by date
+-   Promotions by product
+-   Promotions by date
+
+Database connection management remains isolated in:
+
+``` text
+backend/app/database/connection.py
+```
+
+------------------------------------------------------------------------
+
+# 10. Investigation Architecture
+
+Investigation mode is a structured workflow rather than a single LLM
+prompt.
+
+The workflow is:
+
+``` text
+                 User Question
+                      │
+                      ▼
+            ┌───────────────────┐
+            │ Investigation      │
+            │ Planner            │
+            └─────────┬─────────┘
+                      │
+                      ▼
+             Investigation Plan
+                      │
+                      ▼
+            ┌───────────────────┐
+            │ Hypothesis        │
+            │ Generator         │
+            └─────────┬─────────┘
+                      │
+                      ▼
+                Hypotheses
+                      │
+                      ▼
+            Evidence Collection
+                      │
+          ┌───────────┼───────────┐
+          ▼           ▼           ▼
+       Revenue      Region      Product
+          │           │           │
+          └───────────┼───────────┘
+                      │
+                      ▼
+               Evidence Set
+                      │
+                      ▼
+            Evidence Synthesis
+                      │
+                      ▼
+               Conclusion
+```
+
+The investigation planner chooses relevant investigation areas from the
+approved catalog.
+
+The evidence collector then executes deterministic analytical
+operations.
+
+The LLM synthesizes the resulting evidence rather than inventing the
+underlying numerical facts.
+
+------------------------------------------------------------------------
+
+# 11. Investigation Catalog
+
+The current investigation catalog contains:
+
+``` text
+revenue_trend
+regional_performance
+product_performance
+category_performance
+customer_segments
+promotion_impact
+inventory_stockouts
+```
+
+These investigation areas map to approved analytical tools.
+
+This creates a controlled relationship:
+
+``` text
+Investigation Area
+       │
+       ▼
+Approved Tool
+       │
+       ▼
+Deterministic Evidence
+```
+
+------------------------------------------------------------------------
+
+# 12. Hypothesis Generation
+
+The investigation workflow generates hypotheses after the initial plan.
+
+For example, a question such as:
+
+> Why is revenue changing?
+
+can lead to hypotheses involving:
+
+-   Product mix
+-   Regional fluctuations
+-   Customer-segment changes
+-   Promotion effects
+-   Inventory stockouts
+
+Each hypothesis is associated with relevant evidence areas.
+
+The hypotheses are investigation directions, not facts.
+
+The evidence collection stage determines what the available data
+supports.
+
+------------------------------------------------------------------------
+
+# 13. Evidence Synthesis
+
+Evidence is collected deterministically before synthesis.
+
+Conceptually:
+
+``` text
+Hypothesis
+    │
+    ▼
+Evidence requirements
+    │
+    ▼
+Approved analytics
+    │
+    ▼
+Structured evidence
+    │
+    ▼
+LLM synthesis
+```
+
+The synthesis layer is instructed to distinguish evidence from
+interpretation.
+
+This reduces the risk of presenting unsupported causal claims as
+established facts.
+
+------------------------------------------------------------------------
+
+# 14. Challenge My Conclusion
+
+Challenge mode reuses the completed investigation rather than starting
+an unrelated second investigation.
+
+Architecture:
+
+``` text
+Completed Investigation
+        │
+        ├── Original conclusion
+        └── Existing evidence
+                 │
+                 ▼
+        Direct Challenge Reviewer
+                 │
+                 ▼
+              Groq
+                 │
+                 ▼
+        ┌──────────────────────┐
+        │ Supporting evidence  │
+        │ Contradicting limits │
+        │ Missing evidence     │
+        │ Alternative causes   │
+        │ Bottom line          │
+        └──────────────────────┘
+```
+
+The current implementation uses one bounded Groq synthesis call for the
+challenge review.
+
+This keeps the challenge workflow focused and avoids unnecessarily
+repeating the entire investigation process.
+
+------------------------------------------------------------------------
+
+# 15. Anomaly Detection Architecture
+
+Revenue anomaly detection is deterministic.
+
+The engine:
+
+1.  Retrieves monthly revenue data.
+2.  Requires at least three months of history.
+3.  Calculates the expected revenue as the mean of the previous three
+    months.
+4.  Compares the current month against that baseline.
+5.  Calculates percentage deviation.
+6.  Classifies the deviation.
+
+``` text
+Monthly Revenue
+      │
+      ▼
+Previous 3 Months
+      │
+      ▼
+Historical Mean
+      │
+      ▼
+Current Month Comparison
+      │
+      ▼
+Deviation %
+      │
+      ▼
+Classification
+```
+
+Thresholds:
+
+``` text
+< 10%       Normal
+10–20%      Low
+20–30%      Medium
+>= 30%      High
+```
+
+The current synthetic dataset produces no non-normal monthly revenue
+anomalies under these thresholds.
+
+------------------------------------------------------------------------
+
+# 16. Conversation Architecture
+
+Conversation identity is shared across the application's conversational
+workflows.
+
+``` text
+                    Conversation
+                         │
+          ┌──────────────┼──────────────┐
+          ▼              ▼              ▼
+       Copilot      Investigation    Challenge
+          │              │              │
+          └──────────────┼──────────────┘
+                         │
+                  conversation_id
+```
+
+This allows a user to move between Copilot and Investigation without
+creating unrelated conversational contexts.
+
+The conversation manager currently maintains:
+
+-   Conversation ID
+-   Title
+-   Created timestamp
+-   Updated timestamp
+-   Archive state
+-   Message history
+
+Investigation memory additionally maintains:
+
+-   Latest investigation plan
+-   Latest evidence
+-   Latest answer
+
+------------------------------------------------------------------------
+
+# 17. Conversation Lifecycle
+
+``` text
+Create
+  │
+  ▼
+Active Conversation
+  │
+  ├── Rename
+  │
+  ├── Continue conversation
+  │
+  ├── Archive ─────► Archived
+  │                     │
+  │                     └── Restore
+  │
+  └── Delete
+```
+
+Conversation titles are initially derived from the first user question.
+
+The frontend provides conversation management actions while the backend
+owns the conversation lifecycle operations.
+
+------------------------------------------------------------------------
+
+# 18. Streaming Architecture
+
+Investigation and challenge workflows use streaming responses so that
+long-running AI workflows can communicate progress/results to the
+frontend.
+
+Conceptually:
+
+``` text
+Backend workflow
+      │
+      ├── Start
+      ├── Plan
+      ├── Hypothesis
+      ├── Evidence
+      ├── Answer tokens
+      └── Complete
+               │
+               ▼
+            Frontend
+```
+
+This allows the interface to represent a multi-stage analytical process
+rather than waiting silently for one large response.
+
+------------------------------------------------------------------------
+
+# 19. Security and Reliability Boundaries
+
+The current implementation applies several application-level controls.
+
+### Controlled LLM capabilities
+
+The LLM can only call explicitly defined tools.
+
+### Bounded tool execution
+
+Agent execution is limited by a maximum tool-iteration configuration.
+
+### Bounded challenge synthesis
+
+Challenge generation uses a bounded output size and one controlled
+synthesis call.
+
+### Parameterized database operations
+
+Repository operations use parameterized SQL values.
+
+### No direct LLM database access
+
+The model cannot directly issue arbitrary SQL against the database.
+
+### Error isolation
+
+Tool execution errors are converted into structured error results rather
+than allowing uncontrolled failures to propagate through the entire
+agent workflow.
+
+------------------------------------------------------------------------
+
+# 20. Observability
+
+The backend includes application logging and request middleware.
+
+Logging can capture information such as:
+
+-   Request ID
+-   HTTP method
+-   API path
+-   Conversation ID
+-   Investigation activity
+-   Tool execution activity
+-   Workflow stages
+
+This creates a traceable application flow such as:
+
+``` text
+Request
+  ↓
+Conversation ID
+  ↓
+Agent / workflow
+  ↓
+Tool
+  ↓
+Analytics
+  ↓
+Repository
+  ↓
+Result
+```
+
+The current implementation is an application-level observability
+foundation rather than a complete production telemetry platform.
+
+------------------------------------------------------------------------
+
+# 21. Deployment Boundary
+
+The current project is designed primarily as a local development and FDE
+training implementation.
+
+The logical deployment boundary is:
+
+``` text
+Browser
+   │
+   ▼
+Frontend Application
+   │
+   ▼
+FastAPI Service
+   │
+   ├── Groq API
+   │
+   └── SQLite
+```
+
+The architecture deliberately keeps the application layers separated so
+that individual infrastructure components can later be replaced.
 
 For example:
 
-```text
-Sum(regional revenue)
-        =
-Overall revenue
+``` text
+SQLite
+  ↓
+Production relational/analytical database
 ```
 
-## Multi-turn Reasoning
+could be introduced primarily through the repository/data-access
+boundary rather than rewriting the entire agent.
 
-Can follow-up questions use previous context?
+------------------------------------------------------------------------
 
-## Tool Safety
+# 22. Current Architectural Limitations
 
-Are invalid tool arguments rejected?
+The current architecture intentionally contains several limitations.
 
----
+## In-memory conversation state
 
-# 26. Security Boundary
+Conversation management currently uses in-memory application state.
 
-The current implementation establishes basic security-oriented boundaries:
+Therefore:
 
-```text
-Environment secrets
-        ↓
-Configuration layer
-
-User input
-        ↓
-API validation
-
-LLM tool arguments
-        ↓
-Tool validation
-
-Business calculations
-        ↓
-Deterministic analytics
+``` text
+Frontend refresh
+      ↓
+Same backend process
+      ↓
+Conversation state remains
 ```
 
-The current training implementation does not yet include:
+but:
 
-* user authentication
-* authorization
-* role-based access control
-* network isolation
-* managed identity
-* production secret management
-
-These are deployment-stage concerns for a production Azure implementation.
-
----
-
-# 27. Current Deployment Model
-
-The current project is intentionally local.
-
-```text
-Developer Machine
-│
-├── FastAPI
-├── SQLite
-├── Groq API
-└── React/Vite
+``` text
+Backend restart
+      ↓
+In-memory state cleared
+      ↓
+Conversation history lost
 ```
 
-No production deployment is currently configured.
+Persistent conversation storage is a future hardening item.
 
-This keeps the training project focused on:
+## SQLite
 
-* system design
-* AI orchestration
-* data engineering
-* analytics
-* application engineering
-* evaluation
+SQLite provides a lightweight, portable development datastore but is not
+intended to represent the final enterprise-scale data platform.
 
----
+## Synthetic data
 
-# 28. Future Production Architecture
+The CPG dataset is generated synthetic data and does not represent a
+real organization's production data.
 
-A future enterprise deployment could evolve toward:
+## Frontend bundle size
 
-```text
-                         Users
+The current frontend build reports a bundle-size warning. Code splitting
+and dependency optimization are future optimization work.
+
+------------------------------------------------------------------------
+
+# 23. Architectural Principles
+
+The implementation follows these principles:
+
+### Separation of concerns
+
+Each layer owns a distinct responsibility.
+
+### Least privilege for AI
+
+The model receives only the analytical capabilities explicitly exposed
+as tools.
+
+### Deterministic source of truth
+
+Numerical business calculations remain deterministic.
+
+### Evidence before conclusion
+
+Investigation workflows collect evidence before synthesis.
+
+### Explicit uncertainty
+
+The system should distinguish evidence, interpretation, and unsupported
+causal claims.
+
+### Testable boundaries
+
+Analytics, repositories, agent behavior, and API behavior can be tested
+independently.
+
+### Replaceable infrastructure
+
+Database-specific mechanics are isolated from business analytics and
+agent logic.
+
+------------------------------------------------------------------------
+
+# 24. Final Architecture Summary
+
+Nexa's architecture can be summarized as:
+
+``` text
+                         USER
                            │
                            ▼
-                    Azure Front Door
+                    React Frontend
                            │
                            ▼
-                 React / Static Web App
-                           │
-                           ▼
-                  Azure Container Apps
+                      FastAPI
                            │
               ┌────────────┴────────────┐
               │                         │
               ▼                         ▼
-        FastAPI Agent              Background Jobs
-              │
-              ├───────────────┐
-              │               │
-              ▼               ▼
-       Azure AI Foundry   Analytics Tools
-              │               │
-              │               ▼
-              │         Azure SQL
-              │
-              ▼
-       Azure AI Services
+       Conversational Agent       Investigation
+              │                         │
+              └────────────┬────────────┘
+                           │
+                           ▼
+                    Approved Tools
+                           │
+                           ▼
+                      Analytics
+                           │
+                           ▼
+                     Repositories
+                           │
+                           ▼
+                        SQLite
 ```
 
-Additional enterprise services could include:
+With Groq providing:
 
-```text
-Microsoft Entra ID
-Azure Key Vault
-Azure AI Search
-Azure Monitor
-Application Insights
-Microsoft Defender for Cloud
-Azure Policy
-Private Endpoints
-Azure DevOps
+``` text
+Intent interpretation
+Tool selection
+Hypothesis generation
+Evidence synthesis
+Natural-language response
+Challenge review
 ```
 
-These are future production extensions rather than requirements of the current training implementation.
+and the application providing:
 
----
-
-# 29. Key Architectural Decisions
-
-## Decision 1 — LLM does not directly access the database
-
-Reason:
-
-* improves control
-* reduces hallucination risk
-* improves testability
-* creates explicit analytical capabilities
-
-## Decision 2 — Deterministic analytics
-
-Reason:
-
-* business metrics must be reproducible
-* easier debugging
-* easier validation
-* easier evaluation
-
-## Decision 3 — Tool-based architecture
-
-Reason:
-
-* modular capabilities
-* explicit boundaries
-* easier extension
-* easier observability
-
-## Decision 4 — Separate visualization generation from rendering
-
-Reason:
-
-* backend controls analytical intent
-* frontend controls presentation
-* keeps UI flexible
-
-## Decision 5 — Separate deterministic tests from live LLM evaluation
-
-Reason:
-
-* prevents rate-limit dependency
-* reduces cost
-* improves test speed
-* makes CI more reliable
-
-## Decision 6 — In-memory conversation state for training
-
-Reason:
-
-* simple implementation
-* sufficient for local development
-* easy to replace with persistent storage later
-
----
-
-# 30. Architectural Mental Model
-
-The entire system can be summarized as:
-
-```text
-                     USER
-                       │
-                       ▼
-                  React UI
-                       │
-                       ▼
-                  FastAPI
-                       │
-              Validation + ID
-                       │
-                       ▼
-                 Agent Layer
-                       │
-                       ▼
-                     Groq
-                       │
-                "What tools?"
-                       │
-         ┌─────────────┼─────────────┐
-         ▼             ▼             ▼
-       Sales        Products      Inventory
-         │             │             │
-         └─────────────┼─────────────┘
-                       ▼
-                Deterministic
-                   Analytics
-                       │
-                       ▼
-                  SQLite Data
-                       │
-                       ▼
-                  Tool Results
-                       │
-                       ▼
-                     Groq
-                       │
-                "What does it
-                  mean?"
-                       │
-                       ▼
-                Business Answer
-                       │
-             ┌─────────┴─────────┐
-             ▼                   ▼
-          Text Answer         Chart Config
-             │                   │
-             └─────────┬─────────┘
-                       ▼
-                    React
+``` text
+Data access
+Business calculations
+Evidence generation
+Validation
+Execution boundaries
+Conversation management
 ```
 
-The fundamental separation is:
-
-```text
-             ┌──────────────────────┐
-             │     Probabilistic    │
-             │        Layer         │
-             │                      │
-             │        Groq          │
-             │     Reasoning        │
-             └──────────┬───────────┘
-                        │
-                  Tool Boundary
-                        │
-             ┌──────────▼───────────┐
-             │     Deterministic    │
-             │        Layer         │
-             │                      │
-             │ SQL / Python / Data  │
-             └──────────────────────┘
-```
-
-This boundary is the core architectural decision of the CPG Analytics Copilot.
-
-> **Use AI for understanding and reasoning. Use deterministic systems for facts, calculations, and business truth.**
+This separation is the core architectural pattern demonstrated by the
+project.

@@ -1,1963 +1,634 @@
-# CPG Analytics Copilot
+# Nexa Analytics Copilot
 
-An enterprise-style conversational analytics application for a fictional Consumer Packaged Goods (CPG) company, built to demonstrate **Forward Deployed Engineer (FDE) patterns for AI-powered data applications**.
+Nexa Analytics Copilot is an enterprise-style conversational analytics
+application for a fictional CPG company, **Nexa Consumer Products**.
 
-The application allows business users to ask natural-language questions about sales, products, customers, promotions, inventory, and regional performance.
+It allows business users to ask questions about sales, products,
+regions, customers, promotions, and inventory using natural language.
+The system combines an LLM-powered agent with deterministic analytics
+and controlled data access so that the LLM interprets business questions
+without becoming the source of truth for numerical results.
 
-Instead of allowing the LLM to directly query the database, the system uses a controlled architecture where:
+------------------------------------------------------------------------
 
-> **The LLM understands the business question and selects analytics tools. Deterministic SQL and Python analytics remain the source of truth.**
+## 1. What Nexa Does
 
----
+Nexa is designed around a simple principle:
 
-# 1. Project Overview
+> **The LLM interprets the business question; deterministic analytics
+> and the database remain the source of truth.**
 
-The CPG Analytics Copilot simulates an enterprise analytics assistant for **Nexa Consumer Products**.
+A user can ask questions such as:
 
-A business user can ask questions such as:
+-   What is our total revenue?
+-   Which region performs best?
+-   What are our top products?
+-   Show me monthly revenue.
+-   Why is revenue changing?
+-   What is driving our sales performance?
+-   Challenge my conclusion.
 
-```text
-What is our total revenue?
+The application can return natural-language explanations, structured
+analytical results, and visualizations where appropriate.
+
+------------------------------------------------------------------------
+
+## 2. Core Capabilities
+
+### Conversational Analytics
+
+The Copilot can answer business questions using approved analytics tools
+backed by the Nexa CPG dataset.
+
+### Investigation Planning
+
+Investigation mode converts a broad business question into a structured
+investigation plan.
+
+The planner can consider areas including:
+
+-   Revenue trends
+-   Regional performance
+-   Product performance
+-   Category performance
+-   Customer segments
+-   Promotion impact
+-   Inventory stockouts
+
+### Evidence Collection and Synthesis
+
+Investigation workflows collect deterministic evidence from approved
+analytics functions and use that evidence to produce a business-oriented
+synthesis.
+
+### Challenge My Conclusion
+
+After an investigation produces a conclusion, Nexa can challenge it
+using the existing investigation evidence.
+
+The challenge review considers:
+
+-   Supporting evidence
+-   Contradicting or limiting evidence
+-   Missing evidence
+-   Alternative explanations
+-   A final evidence-based bottom line
+
+### Anomaly Detection
+
+The anomaly engine compares monthly revenue against a rolling
+three-month historical baseline.
+
+Current thresholds:
+
+    Deviation Classification
+  ----------- ----------------
+       \< 10% Normal
+      10--20% Low
+      20--30% Medium
+      \>= 30% High
+
+The current synthetic dataset does not produce a non-normal revenue
+anomaly under this rule.
+
+### Conversation Management
+
+The application supports:
+
+-   Multiple conversations
+-   Conversation history
+-   Shared conversation identity across Copilot, Investigation, and
+    Challenge
+-   Automatic conversation titles based on the first user question
+-   Rename
+-   Archive
+-   Restore
+-   Delete
+-   Archived conversation browsing
+
+------------------------------------------------------------------------
+
+## 3. Architecture
+
+``` text
+React + TypeScript
+        |
+        | REST / streaming
+        v
+FastAPI
+        |
+        v
+Analytics Agent
+        |
+        | approved tools
+        v
+Analytics Layer
+        |
+        v
+Repository Layer
+        |
+        v
+SQLite
 ```
 
-```text
-Which region performs best?
+For investigation workflows:
+
+``` text
+User Question
+      |
+      v
+Investigation Planner
+      |
+      v
+Hypotheses
+      |
+      v
+Deterministic Evidence Collection
+      |
+      v
+Evidence Synthesis
+      |
+      v
+Business Conclusion
+      |
+      v
+Challenge Review
 ```
 
-```text
-What are our top 10 products?
-```
+### Data Access Boundary
 
-```text
-Show me monthly revenue.
-```
+The application intentionally separates reasoning from data access:
 
-```text
-How are our customer segments performing?
-```
-
-```text
-Do promotions work?
-```
-
-```text
-Are we having stockouts?
-```
-
-And more complex diagnostic questions:
-
-```text
-Why is revenue changing?
-```
-
-The system can investigate multiple analytical dimensions before generating a business-oriented explanation.
-
----
-
-# 2. Core Design Principle
-
-The most important architectural decision in this project is:
-
-```text
-                    USER
-                      │
-                      ▼
-              Natural Language
-                      │
-                      ▼
-                  LLM Agent
-                      │
-                Tool Selection
-                      │
-                      ▼
-              Approved Tools
-                      │
-                      ▼
-          Deterministic Analytics
-                      │
-                      ▼
-                   SQLite
-                      │
-                      ▼
-             Structured Results
-                      │
-                      ▼
-                LLM Synthesis
-                      │
-                      ▼
-              Business Response
-```
-
-The LLM is **not the source of truth**.
-
-Business metrics come from deterministic analytics functions backed by SQLite.
-
-This separation improves:
-
-* reliability
-* explainability
-* testability
-* security
-* maintainability
-
----
-
-# 3. Why This Project Exists
-
-This project was built as an FDE-style engineering exercise rather than simply as a chatbot demo.
-
-The goal is to demonstrate the ability to move from:
-
-```text
-Business Problem
-      ↓
-Data Model
-      ↓
+``` text
+Agent
+  |
+  v
+Tools
+  |
+  v
 Analytics
-      ↓
-AI Agent
-      ↓
-Application API
-      ↓
-Frontend
-      ↓
-Evaluation
-      ↓
-Production Thinking
+  |
+  v
+Repositories
+  |
+  v
+Database
 ```
 
-An FDE working on an enterprise AI deployment must understand all of these layers.
+The LLM does **not** execute SQL directly.
 
-The project therefore intentionally includes:
+Agent tools do **not** execute SQL directly.
 
-* business-oriented analytics
-* deterministic data processing
-* LLM tool calling
-* multi-turn conversations
-* multi-tool reasoning
-* structured API responses
-* visual analytics
-* validation
-* logging
-* health checks
-* readiness checks
-* evaluation
-* tool safety
-* production architecture considerations
+Repositories are the application layer responsible for database access.
 
----
+This keeps analytical logic, data access, and LLM orchestration
+independently testable.
 
-# 4. Business Context
+------------------------------------------------------------------------
 
-The fictional company is:
+## 4. Technology Stack
 
-**Nexa Consumer Products**
+  Layer             Technology
+  ----------------- ----------------------------
+  Frontend          React + TypeScript + Vite
+  Backend           FastAPI + Python
+  LLM               Groq
+  Model             `openai/gpt-oss-20b`
+  Database          SQLite
+  Analytics         SQL + Python
+  Visualization     Plotly / `react-plotly.js`
+  API               REST + streaming responses
+  Testing           Pytest
+  Version Control   Git
 
-The business operates across:
+------------------------------------------------------------------------
 
-### Product Categories
+## 5. CPG Data Model
 
-* Personal Care
-* Home Care
-* Food & Beverages
+The synthetic Nexa dataset contains six primary tables:
 
-### Regions
-
-* South
-* West
-* North
-* East
-
-### Channels / Store Types
-
-* Supermarket
-* Convenience
-* E-commerce
-* Distributor
-
-### Customer Segments
-
-* Premium
-* Standard
-* Value
-
----
-
-# 5. Questions the Copilot Can Answer
-
-## Sales
-
-```text
-What is our total revenue?
+``` text
+customers
+products
+stores
+sales
+promotions
+inventory
 ```
 
-Returns:
+The generated dataset contains approximately:
 
-* transactions
-* units sold
-* revenue
-* average transaction value
+-   10,000 customers
+-   100 products
+-   200 stores
+-   300 promotions
+-   100,000 inventory records
+-   250,000 sales transactions
 
----
+The dataset is deterministic and generated with a fixed random seed so
+that development and testing can be reproduced.
 
-## Regional Performance
+------------------------------------------------------------------------
 
-```text
-Which region performs best?
-```
+## 6. Repository Structure
 
-Analyzes revenue and units by region.
-
----
-
-## Products
-
-```text
-What are our top 10 products?
-```
-
-Returns product-level performance ranked by revenue.
-
----
-
-## Trends
-
-```text
-Show me monthly revenue.
-```
-
-Returns monthly:
-
-* transactions
-* units
-* revenue
-
-and can generate a line chart.
-
----
-
-## Categories
-
-```text
-Which category generates the most revenue?
-```
-
-Analyzes category-level performance.
-
----
-
-## Customers
-
-```text
-How are our customer segments performing?
-```
-
-Analyzes:
-
-* transactions
-* customers
-* units
-* revenue
-* average transaction value
-
-by customer segment.
-
----
-
-## Promotions
-
-```text
-Do promotions work?
-```
-
-Compares promotional and non-promotional transactions.
-
-The response is descriptive rather than causal.
-
----
-
-## Inventory
-
-```text
-Are we having stockouts?
-```
-
-Analyzes stockout rates by region.
-
----
-
-## Diagnostic Questions
-
-The system also supports questions such as:
-
-```text
-Why is revenue changing?
-```
-
-The agent can investigate multiple dimensions:
-
-```text
-Monthly Trend
-      +
-Regional Performance
-      +
-Product Performance
-      +
-Category Performance
-      +
-Promotion Impact
-      +
-Inventory Conditions
-```
-
-The final response distinguishes between:
-
-```text
-Observed Fact
-      vs.
-Possible Explanation
-      vs.
-Unsupported Assumption
-```
-
----
-
-# 6. Architecture
-
-## High-Level Architecture
-
-```text
-┌───────────────────────────────┐
-│        React Frontend         │
-│                               │
-│ Chat UI + Plotly Charts       │
-└───────────────┬───────────────┘
-                │
-                │ REST / JSON
-                ▼
-┌───────────────────────────────┐
-│          FastAPI              │
-│                               │
-│ Validation                    │
-│ Sessions                      │
-│ Request IDs                   │
-│ Error Handling                │
-└───────────────┬───────────────┘
-                │
-                ▼
-┌───────────────────────────────┐
-│       Analytics Agent         │
-│                               │
-│ Groq LLM                      │
-│ Prompt                        │
-│ Tool Selection                │
-│ Multi-turn Reasoning          │
-└───────────────┬───────────────┘
-                │
-                ▼
-┌───────────────────────────────┐
-│      Analytics Tool Layer     │
-│                               │
-│ Sales                         │
-│ Products                      │
-│ Customers                     │
-│ Promotions                    │
-│ Inventory                     │
-└───────────────┬───────────────┘
-                │
-                ▼
-┌───────────────────────────────┐
-│            SQLite             │
-│                               │
-│ Customers                     │
-│ Products                      │
-│ Stores                        │
-│ Sales                         │
-│ Promotions                    │
-│ Inventory                     │
-└───────────────────────────────┘
-```
-
----
-
-# 7. Technology Stack
-
-| Layer          | Technology           |
-| -------------- | -------------------- |
-| Frontend       | React + TypeScript   |
-| Build Tool     | Vite                 |
-| Backend        | FastAPI              |
-| Language       | Python               |
-| LLM            | Groq                 |
-| Model          | `openai/gpt-oss-20b` |
-| Database       | SQLite               |
-| Analytics      | SQL + Python         |
-| Visualization  | Plotly               |
-| HTTP Client    | Axios                |
-| Testing        | Pytest               |
-| API Validation | Pydantic             |
-| Configuration  | Pydantic Settings    |
-| Logging        | Python Logging       |
-
----
-
-# 8. Project Structure
-
-```text
+``` text
 cpg-analytics-copilot/
 │
 ├── backend/
 │   ├── app/
 │   │   ├── agent/
-│   │   │   ├── agent.py
-│   │   │   ├── prompts.py
-│   │   │   ├── session.py
-│   │   │   └── tools.py
-│   │   │
 │   │   ├── analytics/
-│   │   │   ├── customers.py
-│   │   │   ├── inventory.py
-│   │   │   ├── products.py
-│   │   │   ├── promotions.py
-│   │   │   ├── sales.py
-│   │   │   └── visualization.py
-│   │   │
 │   │   ├── database/
-│   │   │   ├── connection.py
-│   │   │   ├── generate_data.py
-│   │   │   ├── init_db.py
-│   │   │   └── schema.sql
-│   │   │
+│   │   │   └── repositories/
 │   │   ├── models/
-│   │   │   └── chat.py
-│   │   │
 │   │   ├── config.py
-│   │   ├── logging_config.py
 │   │   ├── main.py
-│   │   └── middleware.py
+│   │   └── ...
 │   │
 │   ├── data/
 │   │   ├── raw/
 │   │   └── processed/
 │   │
 │   ├── tests/
-│   │   ├── evaluation_cases.py
-│   │   ├── test_agent_evaluation.py
-│   │   ├── test_conversation_evaluation.py
-│   │   ├── test_data_integrity.py
-│   │   └── test_tool_safety.py
-│   │
 │   └── requirements.txt
 │
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── ChartRenderer.tsx
-│   │   │   ├── ChatWindow.tsx
-│   │   │   ├── LoadingIndicator.tsx
-│   │   │   └── Message.tsx
-│   │   │
 │   │   ├── services/
-│   │   │   └── api.ts
-│   │   │
 │   │   ├── types/
-│   │   │   └── chat.ts
-│   │   │
 │   │   ├── App.tsx
-│   │   ├── index.css
-│   │   └── main.tsx
-│   │
-│   └── package.json
+│   │   └── ...
+│   └── ...
 │
 ├── docs/
-│   ├── architecture.md
-│   ├── agent-design.md
-│   ├── data-model.md
-│   ├── api.md
-│   └── evaluation.md
 │
 ├── .env.example
 ├── .gitignore
 └── README.md
 ```
 
----
+------------------------------------------------------------------------
 
-# 9. Data Model
+## 7. Getting Started
 
-The database contains six primary tables:
-
-```text
-customers
-products
-stores
-sales
-promotions
-inventory
-```
-
-The central relationship is:
-
-```text
-Customers ─────┐
-               │
-Products ──────┼──► Sales ◄── Stores
-               │
-               │
-Promotions ────┘
-               
-Inventory ─────────► Products + Stores
-```
-
-The `sales` table is the primary transactional fact table.
-
----
-
-# 10. Synthetic Dataset
-
-The project uses reproducible synthetic data.
-
-Approximate dataset size:
-
-| Entity     | Records |
-| ---------- | ------: |
-| Customers  |  10,000 |
-| Products   |     100 |
-| Stores     |     200 |
-| Promotions |     300 |
-| Inventory  | 100,000 |
-| Sales      | 250,000 |
-
-The generator uses:
-
-```python
-random.seed(42)
-```
-
-so the dataset can be reproduced consistently.
-
----
-
-# 11. Analytics Layer
-
-The analytics layer contains deterministic business functions.
-
-Current capabilities include:
-
-```text
-get_overall_sales()
-get_sales_by_region()
-get_monthly_sales_trend()
-get_top_products()
-get_sales_by_category()
-get_customer_segment_performance()
-get_promotion_impact()
-get_stockout_rate()
-```
-
-Each function owns its own SQL logic.
-
-For example:
-
-```text
-User Question
-     ↓
-Agent
-     ↓
-get_sales_by_region()
-     ↓
-SQL
-     ↓
-SQLite
-     ↓
-Regional Results
-```
-
-The LLM never needs to construct arbitrary SQL.
-
----
-
-# 12. Agent Architecture
-
-The agent is built around Groq tool calling.
-
-The agent receives:
-
-```text
-System Prompt
-+
-Conversation History
-+
-User Question
-+
-Available Tools
-```
-
-The model determines whether a tool is required.
-
-If a tool is selected:
-
-```text
-LLM
- ↓
-Tool Call
- ↓
-Argument Validation
- ↓
-Deterministic Function
- ↓
-Tool Result
- ↓
-LLM
-```
-
-The process can repeat for multi-tool investigations.
-
----
-
-# 13. Tool Calling
-
-Available tools are explicitly registered.
-
-Example:
-
-```text
-get_overall_sales
-get_sales_by_region
-get_monthly_sales_trend
-get_top_products
-get_sales_by_category
-get_customer_segment_performance
-get_promotion_impact
-get_stockout_rate
-```
-
-The tool layer validates requests before execution.
-
-For example, `get_top_products` enforces:
-
-```text
-1 ≤ limit ≤ 50
-```
-
-Invalid arguments are rejected.
-
----
-
-# 14. Multi-Tool Reasoning
-
-Simple questions may require one tool.
-
-Example:
-
-```text
-"What is our revenue?"
-```
-
-```text
-get_overall_sales
-```
-
-Diagnostic questions may require multiple tools.
-
-Example:
-
-```text
-"Why is revenue changing?"
-```
-
-Potential workflow:
-
-```text
-Monthly Trend
-      ↓
-Regional Performance
-      ↓
-Product Performance
-      ↓
-Category Performance
-      ↓
-Promotion Impact
-      ↓
-Inventory
-      ↓
-Evidence Synthesis
-```
-
-The agent is instructed not to call irrelevant tools simply to increase the number of tool calls.
-
----
-
-# 15. Conversational Context
-
-The system supports multi-turn conversations through `conversation_id`.
-
-Example:
-
-```text
-User:
-Which region performs best?
-
-Assistant:
-South.
-
-User:
-Why?
-```
-
-The second question is sent with the same conversation ID.
-
-The backend retrieves the previous history and provides it to the agent.
-
-Current conversation state is held in memory.
-
----
-
-# 16. Structured API Response
-
-The `/api/chat` endpoint returns structured data:
-
-```json
-{
-  "answer": "...",
-  "tools_used": [],
-  "tool_results": [],
-  "visualization": null,
-  "conversation_id": "..."
-}
-```
-
-This allows the frontend to separately render:
-
-* natural-language answer
-* charts
-* future evidence/tool information
-
-The frontend does not need to parse charts out of natural language.
-
----
-
-# 17. Visualization
-
-The backend creates a visualization configuration.
-
-Example:
-
-```json
-{
-  "type": "bar",
-  "title": "Revenue by Region",
-  "x": ["South", "West", "North", "East"],
-  "y": [5000000, 4200000, 3500000, 2800000]
-}
-```
-
-React uses Plotly to render the actual chart.
-
-Supported visualization patterns include:
-
-```text
-Monthly Revenue
-    → Line Chart
-
-Revenue by Region
-    → Bar Chart
-
-Top Products
-    → Bar Chart
-
-Revenue by Category
-    → Bar Chart
-```
-
-Architecture:
-
-```text
-Backend
-  ↓
-Chart Configuration
-  ↓
-REST Response
-  ↓
-React
-  ↓
-Plotly
-```
-
----
-
-# 18. REST API
-
-## Health
-
-```http
-GET /health
-```
-
-Example:
-
-```json
-{
-  "status": "healthy",
-  "service": "CPG Analytics Copilot",
-  "version": "0.1.0"
-}
-```
-
----
-
-## Readiness
-
-```http
-GET /readiness
-```
-
-Checks whether required configuration is available.
-
----
-
-## Chat
-
-```http
-POST /api/chat
-```
-
-Request:
-
-```json
-{
-  "message": "Which region performs best?",
-  "conversation_id": "demo-session"
-}
-```
-
----
-
-# 19. Request Validation
-
-The API validates incoming requests through Pydantic.
-
-Current limits:
-
-```text
-message:
-1–4000 characters
-
-conversation_id:
-1–100 characters
-```
-
-This prevents malformed or excessively large requests from reaching the agent.
-
----
-
-# 20. Error Handling
-
-The API distinguishes between:
-
-```text
-Validation Errors
-Runtime Errors
-Unexpected Errors
-Readiness Failures
-```
-
-Typical HTTP statuses:
-
-| Status | Meaning                    |
-| -----: | -------------------------- |
-|    200 | Successful request         |
-|    422 | Validation failure         |
-|    500 | Internal application error |
-|    503 | Service not ready          |
-
-Unexpected errors are logged while the client receives a controlled response.
-
----
-
-# 21. Request Tracing
-
-Every request receives a unique request ID.
-
-Example:
-
-```text
-request_started
-      ↓
-chat_request
-      ↓
-chat_completed
-      ↓
-request_completed
-```
-
-The API also returns:
-
-```http
-X-Request-ID
-```
-
-This makes it easier to trace a request through application logs.
-
----
-
-# 22. Configuration
-
-Configuration is environment-driven.
-
-Example `.env`:
-
-```env
-GROQ_API_KEY=your_api_key
-GROQ_MODEL=openai/gpt-oss-20b
-MAX_TOOL_ITERATIONS=8
-CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
-APP_NAME=CPG Analytics Copilot
-APP_VERSION=0.1.0
-```
-
-The repository contains:
-
-```text
-.env.example
-```
-
-but the real `.env` should never be committed.
-
----
-
-# 23. Local Setup
-
-## Prerequisites
+### Prerequisites
 
 Install:
 
-* Python 3.10+
-* Node.js
-* npm
-* Git
-* Groq API key
+-   Python 3.11+ recommended
+-   Node.js and npm
+-   A Groq API key
 
----
+### Backend
 
-# 24. Clone the Repository
+From the repository root:
 
-```bash
-git clone <your-repository-url>
-cd cpg-analytics-copilot
-```
-
----
-
-# 25. Backend Setup
-
-Move into the backend:
-
-```bash
+``` powershell
 cd backend
 ```
 
-Create a virtual environment:
+Create and activate a virtual environment:
 
-### Windows
-
-```bash
+``` powershell
 python -m venv .venv
-.venv\Scripts\activate
-```
-
-### macOS / Linux
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
+.\.venv\Scripts\Activate.ps1
 ```
 
 Install dependencies:
 
-```bash
+``` powershell
 pip install -r requirements.txt
 ```
 
----
+Configure environment variables using `.env`.
 
-# 26. Environment Configuration
+Then start FastAPI:
 
-Create your environment file from the template.
-
-From the project root:
-
-```bash
-copy .env.example backend\.env
+``` powershell
+uvicorn app.main:app --reload
 ```
 
-On macOS/Linux:
+The backend runs by default at:
 
-```bash
-cp .env.example backend/.env
-```
-
-Then replace:
-
-```env
-GROQ_API_KEY=your_groq_api_key_here
-```
-
-with your actual Groq API key.
-
-Do not commit the real `.env` file.
-
----
-
-# 27. Initialize the Database
-
-From:
-
-```text
-backend/
-```
-
-run the database initialization process used by the project.
-
-The database setup creates the SQLite schema and synthetic dataset.
-
-The resulting database should contain:
-
-```text
-customers
-products
-stores
-sales
-promotions
-inventory
-```
-
----
-
-# 28. Run the Backend
-
-From `backend/`:
-
-```bash
-uvicorn app.main:app --reload --port 8000
-```
-
-The backend should become available at:
-
-```text
+``` text
 http://127.0.0.1:8000
 ```
 
----
+### Frontend
 
-# 29. Verify Backend Health
+Open a second terminal:
 
-Open:
-
-```text
-http://127.0.0.1:8000/health
-```
-
-Expected response:
-
-```json
-{
-  "status": "healthy",
-  "service": "CPG Analytics Copilot",
-  "version": "0.1.0"
-}
-```
-
-Then verify readiness:
-
-```text
-http://127.0.0.1:8000/readiness
-```
-
----
-
-# 30. Run the Frontend
-
-Open a second terminal.
-
-Move into:
-
-```bash
+``` powershell
 cd frontend
-```
-
-Install dependencies:
-
-```bash
 npm install
-```
-
-Start the development server:
-
-```bash
 npm run dev
 ```
 
-The Vite development server should expose the frontend at approximately:
+The Vite development server normally runs at:
 
-```text
+``` text
 http://localhost:5173
 ```
 
----
+------------------------------------------------------------------------
 
-# 31. End-to-End Flow
+## 8. Environment Configuration
 
-Once both services are running:
+Create a `.env` file based on `.env.example`.
 
-```text
-Browser
-   ↓
-React
-   ↓
-POST /api/chat
-   ↓
-FastAPI
-   ↓
-Analytics Agent
-   ↓
-Groq
-   ↓
-Analytics Tool
-   ↓
-SQLite
-   ↓
-Tool Result
-   ↓
-LLM Synthesis
-   ↓
-Structured Response
-   ↓
-React
-   ↓
-Answer + Chart
+At minimum, the application requires the Groq API key.
+
+Example:
+
+``` env
+GROQ_API_KEY=your_api_key_here
+GROQ_MODEL=openai/gpt-oss-20b
 ```
 
----
+Do not commit real credentials to Git.
 
-# 32. Example Questions for Testing
+------------------------------------------------------------------------
 
-Start with simple questions:
+## 9. Running the Application
 
-```text
-What is our total revenue?
+Start the backend first:
+
+``` powershell
+cd backend
+.\.venv\Scripts\Activate.ps1
+uvicorn app.main:app --reload
 ```
 
-```text
-Which region performs best?
+Then start the frontend:
+
+``` powershell
+cd frontend
+npm run dev
 ```
 
-```text
-What are our top 10 products?
+Open the frontend in a browser and use the Nexa Copilot workspace.
+
+------------------------------------------------------------------------
+
+## 10. Example User Flow
+
+### Simple analytics
+
+``` text
+User:
+What are our top products?
+
+        ↓
+
+Agent selects approved analytics tool
+
+        ↓
+
+Deterministic product analysis
+
+        ↓
+
+Groq interprets the result
+
+        ↓
+
+Nexa response + table/chart
 ```
 
-Then test visualization:
+### Investigation
 
-```text
-Show me monthly revenue.
-```
-
-```text
-Show revenue by region.
-```
-
-Then test conversational context:
-
-```text
-Which region performs best?
-```
-
-followed by:
-
-```text
-Why?
-```
-
-Finally test diagnostic reasoning:
-
-```text
+``` text
+User:
 Why is revenue changing?
+
+        ↓
+
+Investigation Planner
+
+        ↓
+
+Hypotheses
+
+        ↓
+
+Evidence collection
+
+        ↓
+
+Revenue / region / product /
+category / customer / promotion /
+inventory analysis
+
+        ↓
+
+Evidence synthesis
+
+        ↓
+
+Business conclusion
 ```
 
----
+### Challenge
 
-# 33. Running Tests
-
-From the backend directory:
-
-```bash
-pytest
+``` text
+Completed investigation
+        ↓
+Existing evidence
+        ↓
+Challenge reviewer
+        ↓
+Supporting evidence
+Contradicting evidence
+Missing evidence
+Alternative explanations
+        ↓
+Challenge conclusion
 ```
 
-The test suite covers multiple layers.
+------------------------------------------------------------------------
 
-```text
-Data Integrity
-      +
-Tool Contracts
-      +
-Tool Safety
-      +
-Conversation Evaluation
+## 11. API Surface
+
+The application exposes conversation, chat, investigation, and challenge
+functionality through FastAPI.
+
+Core conversation operations include:
+
+``` text
+POST   /api/conversations
+GET    /api/conversations
+GET    /api/conversations/{conversation_id}
+PATCH  /api/conversations/{conversation_id}
+POST   /api/conversations/{conversation_id}/archive
+POST   /api/conversations/{conversation_id}/unarchive
+DELETE /api/conversations/{conversation_id}
 ```
 
----
+Chat and analytical workflows include the chat and streaming
+investigation/challenge endpoints implemented by the backend.
 
-# 34. Data Integrity Tests
+Detailed request, response, and streaming contracts are documented
+separately in `docs/api.md`.
 
-The project verifies that dimensional results reconcile with overall results.
+------------------------------------------------------------------------
 
-For example:
+## 12. Testing
 
-```text
-Σ Regional Revenue
-=
-Overall Revenue
+Backend tests:
+
+``` powershell
+cd backend
+pytest -q
 ```
 
-and:
+Frontend production build:
 
-```text
-Σ Regional Units
-=
-Overall Units
+``` powershell
+cd frontend
+npm run build
 ```
 
-These checks help catch analytics regressions.
+The test suite covers areas including:
 
----
+-   Analytics logic
+-   Repository/data-access behavior
+-   Agent behavior
+-   Investigation workflow
+-   Challenge workflow
+-   Anomaly detection
+-   Conversation management
+-   Chat/conversation integration
 
-# 35. Tool Safety Tests
+------------------------------------------------------------------------
 
-The system validates:
+## 13. Important Design Principles
 
-```text
-Unknown tools
-Invalid limits
-Excessive limits
-Invalid argument types
-Valid arguments
-```
+### 1. LLM is not the source of truth
 
-This is important because LLM-generated tool parameters should be treated as untrusted input.
+Numerical and analytical results come from deterministic application
+logic and the database.
 
----
+### 2. Controlled tool access
 
-# 36. LLM Evaluation
+The LLM can only use the analytics capabilities explicitly exposed
+through the agent tool layer.
 
-The project also defines evaluation cases for model behavior.
+### 3. Repository boundary
 
-Examples:
+SQL execution is isolated inside repositories instead of being
+distributed across the application.
 
-```text
-EV001
-What is our total revenue?
+### 4. Deterministic analytics
 
-EV002
-Which region performs best?
+Business calculations that need numerical correctness are implemented in
+Python/SQL rather than delegated to free-form model reasoning.
 
-EV003
-What are our top 10 products?
+### 5. Evidence-based investigation
 
-EV004
-Show me monthly revenue?
+Investigation conclusions are expected to be grounded in collected
+evidence.
 
-EV005
-How are our customer segments performing?
+### 6. Causality control
 
-EV006
-Do promotions work?
+The system should distinguish observed relationships from proven causal
+explanations.
 
-EV007
-Are we having stockouts?
+### 7. Bounded agent behavior
 
-EV008
-Why is revenue changing?
-```
+Tool-calling loops and challenge synthesis are bounded to prevent
+uncontrolled execution.
 
----
+------------------------------------------------------------------------
 
-# 37. Deterministic vs LLM Evaluation
+## 14. Current Limitations
 
-A major lesson from the project is that not every test should invoke the LLM.
+This project is intentionally an FDE training and portfolio
+implementation rather than a fully productionized enterprise deployment.
 
-The preferred model is:
+Known limitations include:
 
-```text
-                Test Suite
-                    │
-          ┌─────────┴─────────┐
-          ▼                   ▼
-   Deterministic Tests    Live LLM Tests
-          │                   │
-          ▼                   ▼
-      Frequent             Controlled
-       CI runs              Runs
-```
+-   Conversation state is currently stored in memory.
+-   Conversation history is therefore lost when the backend process is
+    restarted.
+-   The CPG dataset is synthetic.
+-   SQLite is used as the analytical datastore for simplicity and
+    portability.
+-   The current frontend bundle can be optimized further.
+-   The generated sales data does not currently model inventory
+    stockouts as a constraint on sales generation.
+-   The current implementation does not yet provide enterprise
+    authentication, authorization, deployment infrastructure, or
+    production-grade persistent conversation storage.
 
-Deterministic tests cover:
+These are documented limitations rather than hidden assumptions.
 
-* data integrity
-* tool contracts
-* validation
-* safety
-* application logic
+------------------------------------------------------------------------
 
-Live LLM tests cover:
+## 15. Project Status
 
-* tool selection
-* conversation interpretation
-* reasoning
-* groundedness
-* answer quality
+### Feature implementation
 
----
+-   [x] Investigation planning
+-   [x] Evidence collection
+-   [x] Evidence synthesis
+-   [x] Challenge My Conclusion
+-   [x] Revenue anomaly detection
+-   [x] Conversation memory
+-   [x] Shared conversation identity
+-   [x] Conversation rename
+-   [x] Archive / restore
+-   [x] Delete
+-   [x] Markdown table rendering
+-   [x] Conversational frontend UI
 
-# 38. Rate-Limit Lesson
+The feature build is considered **frozen** at this point.
 
-During Phase 7, repeated live Groq evaluations caused a:
+The next project phase is documentation and hardening rather than adding
+new product functionality.
 
-```text
-429 RateLimitError
-```
+------------------------------------------------------------------------
 
-This exposed an important engineering lesson.
+## 16. Documentation
 
-A naive evaluation architecture can accidentally turn:
+Detailed documentation is maintained under `docs/`:
 
-```text
-16 evaluation cases
-```
-
-into:
-
-```text
-many LLM requests
-```
-
-and exceed token-per-minute limits.
-
-The evaluation strategy was therefore redesigned to move as much testing as possible into deterministic tests.
-
-This makes the test suite:
-
-* faster
-* cheaper
-* more reliable
-* CI-friendly
-* less dependent on external API limits
-
----
-
-# 39. Security Principles
-
-The application follows several important boundaries.
-
-### Secrets stay server-side
-
-The Groq API key is never sent to React.
-
-### LLM cannot directly execute arbitrary SQL
-
-The model selects approved analytics tools.
-
-### Tool arguments are validated
-
-Tool inputs are checked before execution.
-
-### API validates requests
-
-Malformed requests are rejected before agent execution.
-
-### Errors are controlled
-
-Internal implementation details are not unnecessarily returned to clients.
-
----
-
-# 40. Known Limitations
-
-This project is intentionally designed as an FDE training application.
-
-It is not yet a production deployment.
-
-Current limitations include:
-
-### 1. SQLite
-
-SQLite is appropriate for local development but would normally be replaced by an enterprise database.
-
-### 2. In-memory conversation state
-
-Conversation history is lost when the backend process restarts.
-
-### 3. Synthetic data
-
-The dataset does not represent real business data.
-
-### 4. Inventory modeling
-
-The synthetic sales generator does not enforce inventory availability.
-
-Therefore, stockout analysis should not be interpreted as proof of causal revenue impact.
-
-### 5. Promotion analysis
-
-Promotion analysis is descriptive.
-
-It does not establish causal promotional effectiveness.
-
-### 6. Limited analytics surface
-
-Only the currently implemented business tools are available.
-
-### 7. No authentication
-
-The training application does not currently implement enterprise identity and access management.
-
-### 8. No production deployment
-
-The current project is designed for local development.
-
----
-
-# 41. Future Production Architecture
-
-A production version could evolve toward Azure.
-
-A possible architecture:
-
-```text
-                         Users
-                           │
-                           ▼
-                  React / Web Application
-                           │
-                           ▼
-                 Azure Container Apps
-                           │
-                           ▼
-                        FastAPI
-                           │
-              ┌────────────┼────────────┐
-              │            │            │
-              ▼            ▼            ▼
-           Agent       Analytics    Conversation
-              │            │            │
-              ▼            ▼            ▼
-       Azure AI Foundry  Azure SQL    Persistent Store
-              │
-              ▼
-        Approved Models
-```
-
-Additional enterprise services could include:
-
-```text
-Azure Blob Storage
-Azure AI Search
-Microsoft Entra ID
-Azure Key Vault
-Azure VNet
-Private Endpoints
-Azure Monitor
-Application Insights
-Microsoft Defender for Cloud
-Azure Policy
-Azure DevOps
-```
-
-These services would be introduced based on production requirements rather than added simply for architectural complexity.
-
----
-
-# 42. Production Evolution
-
-The current local architecture:
-
-```text
-SQLite
-+
-In-memory sessions
-+
-Local FastAPI
-+
-Local React
-```
-
-could evolve into:
-
-```text
-Azure SQL
-+
-Persistent Conversation Store
-+
-Container Apps
-+
-Enterprise Identity
-+
-Centralized Monitoring
-+
-Secure Networking
-+
-CI/CD
-```
-
-The important point is that the business-facing agent architecture can remain relatively stable while infrastructure evolves.
-
----
-
-# 43. Why Tools Instead of Direct SQL?
-
-One of the most important design choices in the project is avoiding unrestricted LLM-generated SQL.
-
-Instead of:
-
-```text
-User
- ↓
-LLM
- ↓
-Generate SQL
- ↓
-Database
-```
-
-the application uses:
-
-```text
-User
- ↓
-LLM
- ↓
-Approved Tool
- ↓
-Controlled SQL
- ↓
-Database
-```
-
-This provides stronger control over:
-
-* data access
-* query behavior
-* validation
-* performance
-* security
-* testing
-
-It also creates a clean contract between the agent and analytics layer.
-
----
-
-# 44. Why Structured Responses?
-
-A purely textual response would make frontend behavior difficult to control.
-
-For example:
-
-```text
-"The South region generated the most revenue..."
-```
-
-The frontend would have to infer whether a chart should be displayed.
-
-Instead, the API returns:
-
-```json
-{
-  "answer": "...",
-  "visualization": {
-    "type": "bar",
-    "title": "Revenue by Region",
-    "x": [],
-    "y": []
-  }
-}
-```
-
-The frontend can therefore render the chart deterministically.
-
----
-
-# 45. Why Multi-Tool Reasoning?
-
-Simple analytics questions require one metric.
-
-Diagnostic business questions are different.
-
-For:
-
-```text
-Why is revenue changing?
-```
-
-a single metric is insufficient.
-
-The system therefore investigates multiple dimensions:
-
-```text
-Trend
-+
-Region
-+
-Product
-+
-Category
-+
-Promotion
-+
-Inventory
-```
-
-This moves the application from:
-
-```text
-Question → Metric
-```
-
-toward:
-
-```text
-Question → Investigation → Evidence → Explanation
-```
-
-This is closer to how enterprise analytical workflows operate.
-
----
-
-# 46. FDE Engineering Lessons
-
-This project demonstrates several FDE principles.
-
-## 1. Start with the business problem
-
-Do not start with:
-
-```text
-"What LLM should I use?"
-```
-
-Start with:
-
-```text
-"What business problem are we solving?"
-```
-
----
-
-## 2. Build deterministic foundations first
-
-The analytics layer should work before introducing the LLM.
-
-```text
-Data
- ↓
-SQL
- ↓
-Analytics
- ↓
-Tests
- ↓
-Agent
-```
-
----
-
-## 3. Treat the LLM as an orchestration layer
-
-The model is valuable for:
-
-* understanding natural language
-* selecting tools
-* interpreting results
-* synthesizing explanations
-
-It should not replace deterministic business logic.
-
----
-
-## 4. Validate model-generated inputs
-
-LLM tool arguments are still inputs.
-
-Therefore:
-
-```text
-LLM output
-     ↓
-Validation
-     ↓
-Execution
-```
-
----
-
-## 5. Design for observability
-
-Request IDs, logs, tool usage, and latency are essential when debugging AI applications.
-
----
-
-## 6. Evaluate continuously
-
-A successful demo does not prove production reliability.
-
-Evaluation should evolve with the system.
-
----
-
-## 7. Separate deterministic and probabilistic testing
-
-This was one of the most important lessons from the project.
-
-Not every test should call an LLM.
-
----
-
-# 47. Documentation
-
-Detailed documentation is available under:
-
-```text
+``` text
 docs/
+├── architecture.md
+├── data-model.md
+├── agent-design.md
+├── api.md
+├── evaluation.md
+├── testing.md
+├── decisions.md
+└── roadmap.md
 ```
 
-### Architecture
+These documents explain the architecture, data model, agent design, API
+contracts, evaluation strategy, testing strategy, architectural
+decisions, and known limitations/future hardening areas.
 
-```text
-docs/architecture.md
-```
+------------------------------------------------------------------------
 
-Explains the complete application architecture and production evolution.
+## 17. Project Goal
 
-### Agent Design
+Nexa is designed to demonstrate an important FDE pattern:
 
-```text
-docs/agent-design.md
-```
+> **Build AI systems that connect models to reliable business
+> capabilities rather than treating the model itself as the
+> application.**
 
-Explains:
+The project therefore emphasizes:
 
-* tool calling
-* agent reasoning
-* multi-tool workflows
-* conversation context
-* grounding
-* causality controls
-
-### Data Model
-
-```text
-docs/data-model.md
-```
-
-Explains:
-
-* tables
-* relationships
-* dimensions
-* facts
-* synthetic data
-* indexing
-* data limitations
-
-### API
-
-```text
-docs/api.md
-```
-
-Explains:
-
-* REST endpoints
-* request/response schemas
-* health
-* readiness
-* chat
-* sessions
-* error handling
-* request tracing
-
-### Evaluation
-
-```text
-docs/evaluation.md
-```
-
-Explains:
-
-* test architecture
-* evaluation cases
-* tool safety
-* groundedness
-* diagnostic evaluation
-* LLM evaluation
-* rate-limit lessons
-
----
-
-# 48. Project Development Phases
-
-The project was developed progressively.
-
-```text
-Phase 1
-Data + SQLite
-       ↓
-Phase 2
-Analytics Engine
-       ↓
-Phase 3
-Groq Tool Calling
-       ↓
-Phase 4
-Agent + Conversation
-       ↓
-Phase 5
-React UI + Visualization
-       ↓
-Phase 6
-Enterprise Hardening
-       ↓
-Phase 7
-Evaluation
-       ↓
-Phase 8
-Documentation + GitHub Polish
-```
-
-This progression mirrors a practical FDE development workflow.
-
----
-
-# 49. Final Architecture Mental Model
-
-The entire application can be remembered as:
-
-```text
-                         BUSINESS USER
-                              │
-                              ▼
-                       NATURAL LANGUAGE
-                              │
-                              ▼
-                    ┌──────────────────┐
-                    │   React + Vite   │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │     FastAPI      │
-                    │                  │
-                    │ Validation       │
-                    │ Sessions         │
-                    │ Observability    │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │  Analytics Agent │
-                    │                  │
-                    │ Groq LLM         │
-                    │ Prompt           │
-                    │ Tool Selection   │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │  Tool Boundary   │
-                    │                  │
-                    │ Sales            │
-                    │ Products         │
-                    │ Customers        │
-                    │ Promotions       │
-                    │ Inventory        │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │      SQLite      │
-                    │                  │
-                    │ Source of Truth  │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    DETERMINISTIC RESULTS
-                             │
-                             ▼
-                       LLM SYNTHESIS
-                             │
-                             ▼
-                  ┌──────────────────────┐
-                  │ Structured Response  │
-                  │                      │
-                  │ Answer               │
-                  │ Tool Results         │
-                  │ Visualization        │
-                  │ Conversation ID      │
-                  └──────────┬───────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │ React + Plotly   │
-                    └──────────────────┘
-```
-
----
-
-# 50. Final Project Positioning
-
-The CPG Analytics Copilot is more than a chatbot.
-
-It demonstrates an end-to-end approach to building an enterprise AI analytics application:
-
-```text
-Business Understanding
-        +
-Data Engineering
-        +
-Analytics Engineering
-        +
-LLM Integration
-        +
-Agent Design
-        +
-API Engineering
-        +
-Frontend Engineering
-        +
-Testing
-        +
-Observability
-        +
-Production Architecture
-```
-
-The key architectural principle remains:
-
-> **Use AI for understanding and reasoning, but keep business truth deterministic, controlled, observable, and testable.**
-
----
-
-# 51. Project Status
-
-Current implementation status:
-
-```text
-Phase 1 — Data + SQLite                  ✅
-Phase 2 — Analytics Engine               ✅
-Phase 3 — Groq Tool Calling              ✅
-Phase 4 — Agent + Conversation           ✅
-Phase 5 — Frontend + Visualization       ✅
-Phase 6 — Enterprise Hardening           ✅
-Phase 7 — Evaluation                     ✅
-Phase 8 — Documentation                  ✅
-```
-
-The project is therefore at a **complete training-project state**, with the remaining work being deployment and optional production extensions rather than unfinished core functionality.
+-   API engineering
+-   AI orchestration
+-   deterministic analytics
+-   enterprise-style data access boundaries
+-   investigation workflows
+-   evidence-based reasoning
+-   reliability controls
+-   conversational product design
+-   testing and evaluation
+-   architectural decision-making

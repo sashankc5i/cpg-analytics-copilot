@@ -2,104 +2,64 @@
 
 ## 1. Overview
 
-The CPG Analytics Copilot exposes a REST API through a **FastAPI** backend.
+The Nexa Consumer Products Analytics Copilot exposes a REST API through
+FastAPI.
 
-The API provides the interface between the React frontend and the backend analytics agent.
+The API is responsible for:
 
-The core request flow is:
+-   health and readiness checks
+-   conversational analytics
+-   conversation lifecycle management
+-   streaming investigation workflows
+-   streaming challenge/review workflows
 
-```text
-React Frontend
-      │
-      │ HTTP / JSON
-      ▼
-FastAPI REST API
-      │
-      ▼
-Conversation Manager
-      │
-      ▼
-Analytics Agent
-      │
-      ▼
-Analytics Tools
-      │
-      ▼
-SQLite
+The backend is the authoritative orchestration layer. The frontend
+communicates with it through HTTP/JSON and NDJSON streaming.
+
+------------------------------------------------------------------------
+
+## 2. Base URL
+
+For local development:
+
+``` text
+http://localhost:8000
 ```
 
-The API is intentionally responsible for:
-
-* request validation
-* conversation management
-* agent invocation
-* visualization generation
-* structured response construction
-* error handling
-* request tracing
-* health checks
-
-The API does **not** directly perform business analytics.
-
----
-
-# 2. Base URL
-
-During local development, the backend runs on:
-
-```text
-http://127.0.0.1:8000
-```
-
-The API endpoints are therefore accessed through:
-
-```text
-http://127.0.0.1:8000/health
-http://127.0.0.1:8000/readiness
-http://127.0.0.1:8000/api/chat
-```
-
-The frontend communicates with the backend using the `/api/chat` endpoint.
-
----
-
-# 3. API Endpoints
-
-The current API exposes three primary endpoints.
-
-| Endpoint     | Method | Purpose                    |
-| ------------ | ------ | -------------------------- |
-| `/health`    | GET    | Basic service health       |
-| `/readiness` | GET    | Service readiness          |
-| `/api/chat`  | POST   | Submit analytics questions |
-
----
-
-# 4. Health Endpoint
-
-## Endpoint
-
-```http
-GET /health
-```
-
-## Purpose
-
-The health endpoint provides a lightweight indication that the FastAPI application is running.
-
-It is intended for basic service health checks.
-
-## Example
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-## Response
+All application endpoints are relative to this base URL.
 
 Example:
 
-```json
+``` text
+POST http://localhost:8000/api/chat
+```
+
+------------------------------------------------------------------------
+
+## 3. Request Identification
+
+The backend middleware generates a request ID for incoming requests.
+
+Streaming responses expose the request ID through:
+
+``` text
+X-Request-ID
+```
+
+This provides a correlation point between frontend activity and backend
+logs.
+
+------------------------------------------------------------------------
+
+# 4. Health and Readiness
+
+## 4.1 GET `/health`
+
+Basic service health check.
+
+### Response
+
+``` json
 {
   "status": "healthy",
   "service": "CPG Analytics Copilot",
@@ -107,41 +67,19 @@ Example:
 }
 ```
 
-## Response Fields
+Use this endpoint to determine whether the HTTP service is responding.
 
-| Field     | Description                      |
-| --------- | -------------------------------- |
-| `status`  | Current application health state |
-| `service` | Application name                 |
-| `version` | Application version              |
+------------------------------------------------------------------------
 
----
+## 4.2 GET `/readiness`
 
-# 5. Readiness Endpoint
+Checks whether the application is ready to serve requests.
 
-## Endpoint
+The readiness check verifies that the Groq API key is configured.
 
-```http
-GET /readiness
-```
+### Ready response
 
-## Purpose
-
-The readiness endpoint determines whether the application is ready to process requests.
-
-Unlike `/health`, readiness checks the availability of required configuration.
-
-The current implementation verifies that the Groq API key is configured.
-
-## Example
-
-```bash
-curl http://127.0.0.1:8000/readiness
-```
-
-## Successful Response
-
-```json
+``` json
 {
   "status": "ready",
   "service": "CPG Analytics Copilot",
@@ -149,17 +87,11 @@ curl http://127.0.0.1:8000/readiness
 }
 ```
 
-## Failure Response
+### Not-ready response
 
-If the required configuration is unavailable:
+HTTP `503 Service Unavailable`
 
-```http
-503 Service Unavailable
-```
-
-Example:
-
-```json
+``` json
 {
   "detail": {
     "status": "not_ready",
@@ -168,1120 +100,1028 @@ Example:
 }
 ```
 
----
+### Why both endpoints exist
 
-# 6. Health vs Readiness
+`/health` answers:
 
-The distinction is intentional.
+> Is the service running?
 
-```text
-/health
-   │
-   └── Is the application running?
+`/readiness` answers:
 
-/readiness
-   │
-   └── Can the application process requests?
-```
+> Is the service configured sufficiently to process requests?
 
-This distinction becomes important when the application is deployed to an orchestration platform.
+This distinction is useful when the application is eventually deployed
+behind a container platform or load balancer.
 
-For example:
+------------------------------------------------------------------------
 
-```text
-Container starts
-      │
-      ▼
-/health
-      │
-      ├── Healthy
-      │
-      ▼
-/readiness
-      │
-      ├── Ready
-      │
-      ▼
-Receive traffic
-```
+# 5. Shared Chat Request Model
 
-In a production Azure environment, these endpoints could be connected to platform health probes.
+The Copilot, Investigation, and Challenge streaming endpoints use the
+same request shape.
 
----
-
-# 7. Chat Endpoint
-
-## Endpoint
-
-```http
-POST /api/chat
-```
-
-This is the primary application endpoint.
-
-It receives a natural-language business question and returns:
-
-* the generated answer
-* tools used
-* deterministic tool results
-* visualization configuration
-* conversation ID
-
----
-
-# 8. Chat Request
-
-The request body follows the `ChatRequest` model.
-
-```python
-class ChatRequest(BaseModel):
-    message: str
-    conversation_id: str = "default"
-```
-
-## Request Schema
-
-```json
+``` json
 {
-  "message": "What is our total revenue?",
-  "conversation_id": "default"
+  "message": "Why did revenue change in August?",
+  "conversation_id": "conversation-123"
 }
 ```
 
----
+## Fields
 
-# 9. Request Fields
+  ---------------------------------------------------------------------------------
+  Field               Type                   Required Constraints   Description
+  ------------------- ------------- ----------------- ------------- ---------------
+  `message`           string                      Yes 1--4000       User question
+                                                      characters    or
+                                                                    investigation
+                                                                    request
 
-| Field             | Type   | Required | Constraints       |
-| ----------------- | ------ | -------: | ----------------- |
-| `message`         | string |      Yes | 1–4000 characters |
-| `conversation_id` | string |       No | 1–100 characters  |
+  `conversation_id`   string                      Yes 1--100        Shared
+                                                      characters    conversation
+                                                                    identity
+  ---------------------------------------------------------------------------------
 
-The `conversation_id` defaults to:
+The backend model also defines `"default"` as the default value for
+`conversation_id` when the request model is used without an explicit
+value.
 
-```text
-default
-```
+The frontend always supplies an explicit conversation ID.
 
-when it is not explicitly provided.
+------------------------------------------------------------------------
 
----
+# 6. Conversational Analytics
 
-# 10. Input Validation
+## 6.1 POST `/api/chat`
 
-FastAPI/Pydantic validates incoming requests before they reach the analytics agent.
+Runs the standard Copilot workflow.
 
-For example:
+### Request
 
-```text
-message = ""
-```
-
-is rejected because the minimum length is one character.
-
-Similarly, an excessively long message is rejected.
-
-The API limits messages to:
-
-```text
-4000 characters
-```
-
-This provides a basic protection boundary around the agent.
-
----
-
-# 11. Example Chat Request
-
-Using `curl`:
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d "{\"message\":\"What is our total revenue?\",\"conversation_id\":\"demo-session\"}"
-```
-
----
-
-# 12. Chat Response
-
-The endpoint returns a structured `ChatResponse`.
-
-The response model is:
-
-```python
-class ChatResponse(BaseModel):
-    answer: str
-    tools_used: list[ToolResult]
-    tool_results: list[ToolResult]
-    visualization: Visualization | None
-    conversation_id: str
-```
-
-Conceptually:
-
-```text
-ChatResponse
-│
-├── answer
-├── tools_used
-├── tool_results
-├── visualization
-└── conversation_id
-```
-
----
-
-# 13. Example Response
-
-A simplified response looks like:
-
-```json
+``` json
 {
-  "answer": "Total revenue is ₹X across Y transactions.",
+  "message": "Show me the top 10 products by revenue.",
+  "conversation_id": "conversation-123"
+}
+```
+
+### Processing flow
+
+``` text
+HTTP Request
+    ↓
+Conversation History
+    ↓
+Analytics Agent
+    ↓
+Groq
+    ↓
+Approved Analytics Tools
+    ↓
+Repositories
+    ↓
+SQLite
+    ↓
+Deterministic Results
+    ↓
+Groq Synthesis
+    ↓
+Visualization Builder
+    ↓
+HTTP Response
+```
+
+The agent receives the existing conversation history for the supplied
+conversation ID.
+
+The user and assistant messages are then stored in the conversation
+manager.
+
+### Response
+
+``` json
+{
+  "answer": "The top products by revenue are ...",
   "tools_used": [
-    "get_overall_sales"
-  ],
-  "tool_results": [
-    {
-      "tool": "get_overall_sales",
-      "result": {
-        "transactions": 250000,
-        "units_sold": 500000,
-        "revenue": 12345678.90,
-        "average_transaction_value": 49.38
-      }
-    }
-  ],
-  "visualization": null,
-  "conversation_id": "demo-session"
-}
-```
-
-The actual numerical values are generated from the SQLite database.
-
----
-
-# 14. Answer Field
-
-The `answer` field contains the natural-language response generated by the analytics agent.
-
-Example:
-
-```json
-{
-  "answer": "The South region currently generates the highest revenue."
-}
-```
-
-The answer is produced by the LLM after it has received deterministic analytics results.
-
-The LLM should not independently invent business metrics.
-
----
-
-# 15. Tools Used
-
-The `tools_used` field records the analytics tools invoked during the request.
-
-Example:
-
-```json
-{
-  "tools_used": [
-    "get_monthly_sales_trend",
-    "get_sales_by_region",
     "get_top_products"
-  ]
-}
-```
-
-This is particularly useful for diagnostic questions.
-
-For example:
-
-```text
-Why is revenue changing?
-```
-
-may trigger multiple analytical tools.
-
-The frontend can use this information for transparency, debugging, and future observability.
-
----
-
-# 16. Tool Results
-
-The `tool_results` field contains the deterministic outputs returned by the analytics layer.
-
-Example:
-
-```json
-{
+  ],
   "tool_results": [
     {
-      "tool": "get_sales_by_region",
-      "result": [
-        {
-          "region": "South",
-          "transactions": 50000,
-          "units_sold": 100000,
-          "revenue": 5000000
-        }
-      ]
+      "tool": "get_top_products",
+      "result": {}
     }
-  ]
-}
-```
-
-This creates a clear separation between:
-
-```text
-LLM interpretation
-        vs.
-Deterministic business data
-```
-
----
-
-# 17. Visualization
-
-The API can return a visualization configuration.
-
-Example:
-
-```json
-{
+  ],
   "visualization": {
     "type": "bar",
-    "title": "Revenue by Region",
-    "x": [
-      "South",
-      "West",
-      "North",
-      "East"
-    ],
-    "y": [
-      5000000,
-      4200000,
-      3500000,
-      2800000
-    ]
-  }
+    "title": "Top Products by Revenue",
+    "x": [],
+    "y": []
+  },
+  "conversation_id": "conversation-123"
 }
 ```
 
-The backend does not render the chart.
+`tool_results.result` contains the structured result returned by the
+analytics tool. Its exact shape depends on the tool that was executed.
 
-Instead, it provides the data and chart configuration to the React frontend.
+### Response fields
 
----
+  -----------------------------------------------------------------------
+  Field                   Type                    Description
+  ----------------------- ----------------------- -----------------------
+  `answer`                string                  Natural-language
+                                                  analytical response
 
-# 18. Visualization Architecture
+  `tools_used`            string\[\]              Approved tools executed
+                                                  during the request
 
-The visualization flow is:
+  `tool_results`          object\[\]              Structured outputs
+                                                  returned by those tools
 
-```text
-Analytics Tool
-      │
-      ▼
-Tool Result
-      │
-      ▼
-build_visualization()
-      │
-      ▼
-Visualization JSON
-      │
-      ▼
-FastAPI Response
-      │
-      ▼
-React
-      │
-      ▼
-Plotly
-```
+  `visualization`         object/null             Visualization-ready
+                                                  data when a chart can
+                                                  be generated
 
-This keeps rendering concerns in the frontend.
+  `conversation_id`       string                  Conversation used for
+                                                  the request
+  -----------------------------------------------------------------------
 
----
+### Visualization structure
 
-# 19. Supported Visualization Types
+When a chart is available:
 
-The current visualization layer supports:
-
-### Line charts
-
-Used for:
-
-```text
-Monthly revenue
-```
-
-Example:
-
-```json
+``` json
 {
   "type": "line",
-  "title": "Monthly Revenue"
+  "title": "Monthly Revenue Trend",
+  "x": ["2026-01", "2026-02"],
+  "y": [34054689.3, 30545433.8]
 }
 ```
 
-### Bar charts
+Supported chart types currently include:
 
-Used for:
+-   `line`
+-   `bar`
 
-```text
-Revenue by region
-Top products
-Revenue by category
-```
+The visualization is derived from deterministic tool results rather than
+generated directly by the LLM.
 
-Example:
+### Error handling
 
-```json
+Validation errors are returned as HTTP `400`.
+
+Runtime and unexpected application errors are returned as HTTP `500`.
+
+------------------------------------------------------------------------
+
+# 7. Conversation Management
+
+Conversation state is managed by the in-memory `ConversationManager`.
+
+A conversation contains:
+
+``` json
 {
-  "type": "bar",
-  "title": "Revenue by Region"
+  "conversation_id": "conversation-123",
+  "title": "Revenue Analysis",
+  "created_at": "2026-09-26T10:00:00+00:00",
+  "updated_at": "2026-09-26T10:05:00+00:00",
+  "archived": false,
+  "history": [
+    {
+      "role": "user",
+      "content": "Show me regional revenue."
+    },
+    {
+      "role": "assistant",
+      "content": "..."
+    }
+  ]
 }
 ```
 
----
+## 7.1 POST `/api/conversations`
 
-# 20. Conversation IDs
+Creates a conversation.
 
-The API uses `conversation_id` to maintain conversational context.
+### Request
 
-Example:
-
-### First request
-
-```json
+``` json
 {
-  "message": "Which region performs best?",
-  "conversation_id": "session-123"
+  "title": "Revenue Analysis"
 }
 ```
 
-### Follow-up
+A client may also supply its own conversation ID:
 
-```json
+``` json
 {
-  "message": "Why?",
-  "conversation_id": "session-123"
+  "conversation_id": "conversation-123",
+  "title": "Revenue Analysis"
 }
 ```
 
-The backend retrieves the history associated with:
+### Constraints
 
-```text
-session-123
+  Field               Type       Required Constraint
+  ------------------- -------- ---------- -------------------
+  `conversation_id`   string           No 1--100 characters
+  `title`             string           No 1--200 characters
+
+If `conversation_id` is omitted, the backend generates a UUID.
+
+If `title` is omitted, it defaults to:
+
+``` text
+New Chat
 ```
 
-and passes that context to the analytics agent.
+### Response
 
----
+HTTP `200`
 
-# 21. Conversation Lifecycle
-
-The current implementation follows:
-
-```text
-Request
-   │
-   ▼
-Get conversation history
-   │
-   ▼
-Run agent
-   │
-   ▼
-Generate answer
-   │
-   ▼
-Store user message
-   │
-   ▼
-Store assistant response
-   │
-   ▼
-Return response
+``` json
+{
+  "conversation_id": "conversation-123",
+  "title": "Revenue Analysis",
+  "created_at": "2026-09-26T10:00:00+00:00",
+  "updated_at": "2026-09-26T10:00:00+00:00",
+  "archived": false,
+  "history": []
+}
 ```
 
-This allows subsequent questions to reference earlier discussion.
+------------------------------------------------------------------------
 
----
+## 7.2 GET `/api/conversations`
 
-# 22. Conversation Isolation
+Lists active conversations.
 
-Different conversation IDs maintain separate histories.
+Archived conversations are excluded by default.
 
-Example:
+### Request
 
-```text
-session-A
-   ├── Question 1
-   ├── Answer 1
-   ├── Question 2
-   └── Answer 2
-
-session-B
-   ├── Question 1
-   └── Answer 1
+``` text
+GET /api/conversations
 ```
 
-The conversation manager therefore prevents unrelated sessions from sharing conversational context.
+### Include archived conversations
 
----
-
-# 23. Current Session Storage
-
-The current implementation uses an in-memory `ConversationManager`.
-
-Conceptually:
-
-```python
-class ConversationManager:
-    def __init__(self):
-        self.sessions = defaultdict(list)
+``` text
+GET /api/conversations?include_archived=true
 ```
 
-This is appropriate for the training project and local development.
+### Response
 
-However, it has an important production limitation.
+The endpoint returns a JSON array rather than a wrapper object.
 
-If the backend process restarts:
+``` json
+[
+  {
+    "conversation_id": "conversation-123",
+    "title": "Revenue Analysis",
+    "created_at": "2026-09-26T10:00:00+00:00",
+    "updated_at": "2026-09-26T10:05:00+00:00",
+    "archived": false
+  }
+]
+```
 
-```text
-Process restart
+The list is sorted by `updated_at` in descending order.
+
+------------------------------------------------------------------------
+
+## 7.3 GET `/api/conversations/{conversation_id}`
+
+Returns the complete conversation including message history.
+
+### Example
+
+``` text
+GET /api/conversations/conversation-123
+```
+
+### Response
+
+``` json
+{
+  "conversation_id": "conversation-123",
+  "title": "Revenue Analysis",
+  "created_at": "2026-09-26T10:00:00+00:00",
+  "updated_at": "2026-09-26T10:05:00+00:00",
+  "archived": false,
+  "history": [
+    {
+      "role": "user",
+      "content": "Why did revenue change?"
+    },
+    {
+      "role": "assistant",
+      "content": "Revenue changed because ..."
+    }
+  ]
+}
+```
+
+------------------------------------------------------------------------
+
+## 7.4 Rename Conversation
+
+The frontend supports renaming a conversation through the conversation
+lifecycle API.
+
+Request body:
+
+``` json
+{
+  "title": "August Revenue Investigation"
+}
+```
+
+The title is trimmed and must not be empty.
+
+Maximum title length:
+
+``` text
+200 characters
+```
+
+The conversation's `updated_at` value is refreshed when the title
+changes.
+
+------------------------------------------------------------------------
+
+## 7.5 POST `/api/conversations/{conversation_id}/archive`
+
+Archives a conversation.
+
+### Example
+
+``` text
+POST /api/conversations/conversation-123/archive
+```
+
+The conversation remains stored but is excluded from the default
+conversation list.
+
+### Response
+
+The conversation object is returned with:
+
+``` json
+{
+  "archived": true
+}
+```
+
+------------------------------------------------------------------------
+
+## 7.6 POST `/api/conversations/{conversation_id}/unarchive`
+
+Restores an archived conversation.
+
+### Example
+
+``` text
+POST /api/conversations/conversation-123/unarchive
+```
+
+The conversation becomes visible again in the default conversation list.
+
+------------------------------------------------------------------------
+
+## 7.7 DELETE `/api/conversations/{conversation_id}`
+
+Deletes the conversation from the `ConversationManager`.
+
+### Example
+
+``` text
+DELETE /api/conversations/conversation-123
+```
+
+The operation is explicit and irreversible within the current in-memory
+session.
+
+------------------------------------------------------------------------
+
+# 8. Investigation Mode
+
+## 8.1 POST `/api/investigate/stream`
+
+Runs Investigation Mode and streams the investigation lifecycle to the
+client.
+
+Unlike the standard Copilot endpoint, Investigation Mode is designed for
+multi-dimensional analytical questions.
+
+### Request
+
+``` json
+{
+  "message": "Investigate why revenue declined and identify the most plausible drivers.",
+  "conversation_id": "conversation-123"
+}
+```
+
+### Investigation flow
+
+``` text
+User Question
       ↓
-Memory cleared
+Investigation Planner
       ↓
-Conversation history lost
-```
-
----
-
-# 24. Production Conversation Storage
-
-A production deployment could move conversation state into a persistent store.
-
-Possible architecture:
-
-```text
-React
-  ↓
-FastAPI
-  ↓
-Conversation Service
-  ↓
-Azure SQL / Redis / other approved store
-```
-
-The exact implementation would depend on:
-
-* conversation volume
-* retention requirements
-* latency requirements
-* security requirements
-* multi-instance deployment
-* compliance requirements
-
----
-
-# 25. Request IDs
-
-Each incoming request receives a unique request ID.
-
-The middleware generates:
-
-```text
-UUID
-```
-
-and stores it in:
-
-```text
-request.state.request_id
-```
-
-The response includes:
-
-```http
-X-Request-ID
-```
-
-This provides request-level traceability.
-
----
-
-# 26. Request Logging
-
-A typical request lifecycle produces logs similar to:
-
-```text
-request_started
+Investigation Areas
       ↓
-chat_request
+Hypothesis Generation
       ↓
-chat_completed
+Deterministic Evidence Collection
       ↓
-request_completed
+Evidence Synthesis
+      ↓
+Streamed Answer
 ```
 
-Example:
+The investigation can inspect areas such as:
 
-```text
-2026-09-18 10:00:00 | INFO | request_started | request_id=abc...
-2026-09-18 10:00:00 | INFO | chat_request | request_id=abc... | conversation_id=session-1
-2026-09-18 10:00:03 | INFO | chat_completed | request_id=abc... | tools=['get_sales_by_region']
-2026-09-18 10:00:03 | INFO | request_completed | request_id=abc... | status=200 | duration_ms=3021
+-   revenue trend
+-   regional performance
+-   product performance
+-   category performance
+-   customer segments
+-   promotion impact
+-   inventory stockouts
+
+The planner selects the relevant investigation areas.
+
+The evidence collector then executes the corresponding approved
+analytics tools.
+
+### Response type
+
+The endpoint returns:
+
+``` text
+application/x-ndjson
 ```
 
-This is useful when diagnosing production incidents.
+Each line is an independent JSON event.
 
----
+------------------------------------------------------------------------
 
-# 27. Error Handling
+## 8.2 Investigation Stream Events
 
-The API categorizes backend failures into several classes.
+### `investigation_started`
 
-## Validation Errors
+Signals that investigation processing has started.
 
-Invalid request data is rejected by FastAPI/Pydantic.
-
-Examples:
-
-```text
-Empty message
-Message longer than 4000 characters
-Invalid conversation ID
+``` json
+{
+  "type": "investigation_started"
+}
 ```
 
----
+### `plan`
 
-## Runtime Errors
+Contains the selected investigation areas.
 
-Agent execution failures can return:
-
-```http
-500 Internal Server Error
+``` json
+{
+  "type": "plan",
+  "data": [
+    "revenue_trend",
+    "regional_performance",
+    "product_performance"
+  ]
+}
 ```
 
-The backend logs the error while returning a controlled API response.
+### `hypotheses`
 
----
+Contains the generated hypotheses.
 
-## Unexpected Errors
+``` json
+{
+  "type": "hypotheses",
+  "data": []
+}
+```
 
-Unexpected exceptions are caught and logged.
+The exact hypothesis objects are generated by the investigation
+planner/hypothesis stage.
 
-The API returns:
+### `answer_start`
 
-```json
+Signals that final synthesis is beginning.
+
+``` json
+{
+  "type": "answer_start"
+}
+```
+
+### `token`
+
+Contains a streamed piece of the final answer.
+
+``` json
+{
+  "type": "token",
+  "data": "Revenue "
+}
+```
+
+Clients should append `data` values in order.
+
+### `answer_end`
+
+Signals completion of the streamed answer.
+
+``` json
+{
+  "type": "answer_end"
+}
+```
+
+### `error`
+
+Signals an error during streaming.
+
+``` json
+{
+  "type": "error",
+  "data": "Error description"
+}
+```
+
+------------------------------------------------------------------------
+
+# 9. Challenge My Conclusion
+
+## 9.1 POST `/api/investigate/challenge/stream`
+
+Challenges the latest completed investigation associated with the
+supplied conversation ID.
+
+### Request
+
+``` json
+{
+  "message": "Challenge my conclusion.",
+  "conversation_id": "conversation-123"
+}
+```
+
+The backend retrieves the completed investigation from investigation
+memory.
+
+The frontend does not send the original conclusion as part of the
+request.
+
+### Challenge flow
+
+``` text
+Completed Investigation
+        ↓
+Original Conclusion
+        +
+Existing Evidence
+        ↓
+Direct Challenge Reviewer
+        ↓
+One bounded Groq synthesis call
+        ↓
+Streamed Review
+```
+
+The challenge reviewer examines:
+
+-   supporting evidence
+-   contradicting or limiting evidence
+-   missing evidence
+-   alternative explanations
+-   bottom-line assessment
+
+The implementation intentionally reuses the completed investigation
+evidence instead of launching another broad evidence-collection
+workflow.
+
+------------------------------------------------------------------------
+
+## 9.2 Challenge Stream Events
+
+### `challenge_started`
+
+``` json
+{
+  "type": "challenge_started"
+}
+```
+
+### `claims`
+
+The current compatibility event for extracted claims.
+
+The current challenge implementation no longer performs a separate
+claim-extraction stage; the event remains part of the API stream for
+frontend compatibility.
+
+``` json
+{
+  "type": "claims",
+  "data": []
+}
+```
+
+### `challenge_plan`
+
+Contains the challenge review plan.
+
+``` json
+{
+  "type": "challenge_plan",
+  "data": []
+}
+```
+
+### `challenge_evidence`
+
+Contains the evidence snapshot used by the reviewer.
+
+``` json
+{
+  "type": "challenge_evidence",
+  "data": {}
+}
+```
+
+### `answer_start`
+
+``` json
+{
+  "type": "answer_start"
+}
+```
+
+### `token`
+
+``` json
+{
+  "type": "token",
+  "data": "The conclusion is "
+}
+```
+
+### `answer_end`
+
+``` json
+{
+  "type": "answer_end"
+}
+```
+
+### `error`
+
+``` json
+{
+  "type": "error",
+  "data": "Error description"
+}
+```
+
+------------------------------------------------------------------------
+
+# 10. Shared Conversation Identity
+
+The same `conversation_id` is used across the three user-facing
+analytical modes:
+
+``` text
+Copilot
+   │
+   ├── conversation_id
+   │
+   ▼
+Investigation
+   │
+   ├── conversation_id
+   │
+   ▼
+Challenge
+```
+
+This allows the frontend to treat Copilot, Investigation, and Challenge
+as different modes operating on the same analytical conversation.
+
+The investigation subsystem also maintains analytical context associated
+with the same ID, including:
+
+-   latest investigation plan
+-   latest evidence
+-   latest synthesized answer
+-   investigation history
+
+------------------------------------------------------------------------
+
+# 11. Error Model
+
+The API uses normal HTTP errors for request-level failures and NDJSON
+error events for failures occurring during streaming.
+
+## Standard API errors
+
+Common statuses include:
+
+  Status   Meaning
+  -------- -----------------------------------------
+  `400`    Request or application validation error
+  `500`    Unexpected server/runtime error
+  `503`    Service is not ready
+
+For example:
+
+``` json
 {
   "detail": "An unexpected error occurred."
 }
 ```
 
-This prevents internal exception details from being unnecessarily exposed to the client.
+The exact error detail depends on the endpoint and failure stage.
 
----
+------------------------------------------------------------------------
 
-# 28. HTTP Status Codes
+# 12. Frontend Integration
 
-The current API uses the following primary statuses:
+The frontend API layer is implemented in:
 
-| Status | Meaning                            |
-| -----: | ---------------------------------- |
-|  `200` | Successful request                 |
-|  `422` | Request validation failure         |
-|  `500` | Internal application/agent failure |
-|  `503` | Service not ready                  |
-
----
-
-# 29. CORS
-
-The FastAPI application uses `CORSMiddleware`.
-
-Configured origins are controlled through:
-
-```text
-CORS_ORIGINS
+``` text
+frontend/src/services/api.ts
 ```
 
-Example:
+The shared TypeScript contracts are defined in:
 
-```env
-CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+``` text
+frontend/src/types/chat.ts
 ```
 
-This allows the Vite React development server to communicate with the backend.
+The frontend uses normal JSON requests for:
 
-The configuration is environment-driven rather than hard-coded into the application.
-
----
-
-# 30. API Security Boundary
-
-The API is an important security boundary.
-
-The frontend should not have direct access to:
-
-* Groq API credentials
-* SQLite internals
-* analytics implementation details
-* database connection details
-* internal tool execution logic
-
-Instead:
-
-```text
-Browser
-   │
-   │ Public application API
-   ▼
-FastAPI
-   │
-   ├── Agent
-   ├── Tools
-   └── Database
+``` text
+/api/chat
+/api/conversations
 ```
 
-Secrets remain on the backend.
+and NDJSON streaming for:
 
----
-
-# 31. LLM Boundary
-
-The API also establishes a boundary between the LLM and the database.
-
-The request does **not** follow:
-
-```text
-User
- ↓
-LLM
- ↓
-Generate arbitrary SQL
- ↓
-Database
+``` text
+/api/investigate/stream
+/api/investigate/challenge/stream
 ```
 
-Instead:
+The streaming client processes events incrementally rather than waiting
+for the entire response.
 
-```text
-User
- ↓
-FastAPI
- ↓
-Analytics Agent
- ↓
-Approved Tool
- ↓
-Deterministic Query
- ↓
+------------------------------------------------------------------------
+
+# 13. API Design Principles
+
+The API intentionally keeps responsibilities separated.
+
+``` text
+Frontend
+   ↓
+REST / Streaming API
+   ↓
+Agent / Investigation Orchestration
+   ↓
+Analytics Tools
+   ↓
+Repositories
+   ↓
 SQLite
 ```
 
-This reduces the ability of the model to directly manipulate the database layer.
+Important boundaries:
 
----
+1.  The frontend never accesses SQLite directly.
+2.  The LLM never receives direct database access.
+3.  Tool execution is controlled by the backend.
+4.  Analytics calculations are performed deterministically.
+5.  Conversation identity is explicitly carried through API requests.
+6.  Investigation and Challenge use streaming so the UI can expose
+    workflow progress.
+7.  Visualization data is derived from analytical tool results.
 
-# 32. API and Analytics Separation
+------------------------------------------------------------------------
 
-The API layer does not contain SQL queries.
+# 14. Current API Limitations
 
-For example:
+The current API is intentionally a training/development implementation.
 
-```text
-/api/chat
+### In-memory conversation storage
+
+Conversation state is held in memory.
+
+A backend restart clears:
+
+-   conversation history
+-   conversation metadata
+-   investigation session memory
+
+Persistent conversation storage is not implemented yet.
+
+### Challenge history persistence
+
+The current Challenge streaming path produces the challenge response but
+does not persist that streamed challenge answer into the
+`ConversationManager` history.
+
+This is a known implementation limitation.
+
+### Authentication
+
+The current API does not implement enterprise authentication or
+authorization.
+
+### Multi-user isolation
+
+Conversation IDs provide application-level conversation identity, but
+there is no authenticated user boundary yet.
+
+### Deployment
+
+The documented API assumes local FastAPI execution. Production ingress,
+TLS, authentication, rate limiting, and deployment-specific networking
+are outside the current implementation.
+
+------------------------------------------------------------------------
+
+# 15. Example End-to-End Workflow
+
+A typical user session looks like this:
+
+## Step 1 --- Create conversation
+
+``` http
+POST /api/conversations
 ```
 
-does not directly execute:
-
-```sql
-SELECT SUM(sales_amount)
-FROM sales;
-```
-
-Instead, the API invokes:
-
-```text
-agent.run()
-```
-
-and the agent invokes:
-
-```text
-get_overall_sales()
-```
-
-The analytics function owns the SQL.
-
-This separation improves maintainability.
-
----
-
-# 33. API and Visualization Separation
-
-The API also does not contain React rendering logic.
-
-The backend returns:
-
-```json
+``` json
 {
-  "type": "bar",
-  "title": "Revenue by Region",
-  "x": ["South", "West"],
-  "y": [5000000, 4200000]
+  "title": "Revenue Investigation"
 }
 ```
 
-The frontend decides how to render it.
+------------------------------------------------------------------------
 
-This follows:
+## Step 2 --- Ask a standard analytical question
 
-```text
-Backend
-   ↓
-Data + visualization configuration
-
-Frontend
-   ↓
-Visual rendering
-```
-
----
-
-# 34. Example End-to-End Request
-
-Consider:
-
-```text
-"What are our top products?"
-```
-
-The request enters:
-
-```http
+``` http
 POST /api/chat
 ```
 
-with:
-
-```json
+``` json
 {
-  "message": "What are our top products?",
-  "conversation_id": "demo"
+  "message": "Show me monthly revenue for 2026.",
+  "conversation_id": "conversation-123"
 }
 ```
 
-The backend:
+------------------------------------------------------------------------
 
-```text
-1. Validates request
-2. Creates request ID
-3. Retrieves conversation history
-4. Calls AnalyticsAgent
-5. Groq selects get_top_products
-6. Tool executes deterministic SQL
-7. Result is returned to agent
-8. Agent generates answer
-9. Visualization builder creates chart configuration
-10. Conversation history is updated
-11. Structured response is returned
+## Step 3 --- Run a deeper investigation
+
+``` http
+POST /api/investigate/stream
 ```
 
-The frontend then renders:
-
-```text
-Natural-language answer
-        +
-Top product chart
+``` json
+{
+  "message": "Investigate the main drivers of the revenue movement.",
+  "conversation_id": "conversation-123"
+}
 ```
 
----
+The client consumes the NDJSON events and renders the investigation
+progress and final answer.
 
-# 35. Example Diagnostic Request
+------------------------------------------------------------------------
 
-For:
+## Step 4 --- Challenge the conclusion
 
-```text
-"Why is revenue changing?"
+``` http
+POST /api/investigate/challenge/stream
 ```
 
-the API may trigger several tools:
-
-```text
-get_monthly_sales_trend
-get_sales_by_region
-get_top_products
-get_sales_by_category
-get_promotion_impact
-get_stockout_rate
+``` json
+{
+  "message": "Challenge my conclusion.",
+  "conversation_id": "conversation-123"
+}
 ```
 
-The response therefore provides both:
+The backend retrieves the latest completed investigation for that same
+conversation and performs the bounded challenge review.
 
-```text
-Business explanation
+------------------------------------------------------------------------
+
+## Step 5 --- Reload the conversation
+
+``` http
+GET /api/conversations/conversation-123
 ```
 
-and:
+The frontend receives the stored conversation history.
 
-```text
-Evidence used to construct the explanation
+------------------------------------------------------------------------
+
+# 16. API Mental Model
+
+The API is not simply:
+
+> frontend → LLM → answer
+
+It is:
+
+``` text
+                    ┌─────────────────────┐
+                    │      React UI       │
+                    └──────────┬──────────┘
+                               │
+                     REST / NDJSON
+                               │
+                    ┌──────────▼──────────┐
+                    │     FastAPI API     │
+                    └──────────┬──────────┘
+                               │
+             ┌─────────────────┼─────────────────┐
+             │                 │                 │
+             ▼                 ▼                 ▼
+          Copilot        Investigation       Challenge
+             │                 │                 │
+             └─────────────────┼─────────────────┘
+                               ▼
+                    ┌─────────────────────┐
+                    │ Agent / Orchestration│
+                    └──────────┬──────────┘
+                               ▼
+                    ┌─────────────────────┐
+                    │ Approved Analytics  │
+                    │       Tools         │
+                    └──────────┬──────────┘
+                               ▼
+                    ┌─────────────────────┐
+                    │   Repositories      │
+                    └──────────┬──────────┘
+                               ▼
+                    ┌─────────────────────┐
+                    │      SQLite         │
+                    └─────────────────────┘
 ```
 
-This is important for enterprise analytical workflows.
+The important FDE principle is that the API is the controlled boundary
+between the user interface, AI orchestration, deterministic analytics,
+and data layer.
 
----
+------------------------------------------------------------------------
 
-# 36. API Observability
+# 17. API Reference Summary
 
-The current API provides basic observability through:
+  ----------------------------------------------------------------------------------------------------------
+  Method            Endpoint                                           Purpose             Response
+  ----------------- -------------------------------------------------- ------------------- -----------------
+  `GET`             `/health`                                          Basic service       JSON
+                                                                       health              
 
-* request IDs
-* structured logging
-* request duration
-* HTTP status
-* conversation ID
-* tools used
-* error logging
+  `GET`             `/readiness`                                       Dependency/config   JSON
+                                                                       readiness           
 
-A production implementation could extend this with:
+  `POST`            `/api/chat`                                        Standard analytical JSON
+                                                                       Copilot             
 
-```text
-Application Insights
-       +
-Distributed tracing
-       +
-LLM telemetry
-       +
-Tool latency
-       +
-Token usage
-       +
-Error rates
-```
+  `POST`            `/api/conversations`                               Create conversation JSON
 
----
+  `GET`             `/api/conversations`                               List conversations  JSON array
 
-# 37. Production API Evolution
+  `GET`             `/api/conversations/{conversation_id}`             Retrieve            JSON
+                                                                       conversation        
 
-The current API is intentionally small.
+  `POST`            `/api/conversations/{conversation_id}/archive`     Archive             JSON
+                                                                       conversation        
 
-A future enterprise API could introduce endpoints such as:
+  `POST`            `/api/conversations/{conversation_id}/unarchive`   Restore             JSON
+                                                                       conversation        
 
-```text
-GET    /api/conversations
-GET    /api/conversations/{id}
-DELETE /api/conversations/{id}
+  `DELETE`          `/api/conversations/{conversation_id}`             Delete conversation JSON/status
 
-GET    /api/analytics/regions
-GET    /api/analytics/products
+  `POST`            `/api/investigate/stream`                          Run investigation   NDJSON
 
-GET    /api/metrics
-GET    /api/evaluations
-```
+  `POST`            `/api/investigate/challenge/stream`                Challenge latest    NDJSON
+                                                                       conclusion          
+  ----------------------------------------------------------------------------------------------------------
 
-However, these should only be introduced when there is a concrete product requirement.
-
-The current `/api/chat` endpoint is sufficient for the conversational application.
-
----
-
-# 38. Deployment Considerations
-
-The local API runs as a FastAPI process.
-
-A future Azure deployment could follow:
-
-```text
-                    Internet
-                       │
-                       ▼
-                 Frontend
-                       │
-                       ▼
-              Azure Container Apps
-                       │
-                       ▼
-                    FastAPI
-                       │
-          ┌────────────┼────────────┐
-          ▼            ▼            ▼
-       Agent        Analytics     Config
-          │            │
-          ▼            ▼
-        Groq        Azure SQL
-```
-
-Additional enterprise services could be introduced around this core architecture as required.
-
----
-
-# 39. FDE Perspective
-
-The API is the **contract between the user experience and the intelligence layer**.
-
-An FDE should think about an API in terms of:
-
-```text
-Contract
-Reliability
-Security
-Observability
-Validation
-Scalability
-Failure handling
-```
-
-Not simply:
-
-```text
-"Which endpoint should I create?"
-```
-
-The important architecture is:
-
-```text
-Frontend
-   ↓
-Stable API Contract
-   ↓
-Application Logic
-   ↓
-Agent
-   ↓
-Deterministic Tools
-   ↓
-Data
-```
-
-Each layer has a clearly defined responsibility.
-
----
-
-# 40. API Design Principles
-
-The current implementation follows several principles.
-
-### 1. Validate at the boundary
-
-Invalid requests should not reach the agent.
-
-### 2. Keep business logic out of routes
-
-Routes should orchestrate services rather than contain SQL.
-
-### 3. Keep secrets server-side
-
-The browser never receives the Groq API key.
-
-### 4. Return structured responses
-
-The frontend should not need to parse natural-language text to discover charts or tool usage.
-
-### 5. Make requests traceable
-
-Every request receives a request ID.
-
-### 6. Separate health from readiness
-
-Application availability and dependency readiness are different concepts.
-
-### 7. Keep the LLM behind an application boundary
-
-The LLM should not directly control infrastructure or arbitrary database operations.
-
----
-
-# 41. Mental Model
-
-The simplest way to understand the API is:
-
-```text
-                  USER
-                    │
-                    ▼
-               React UI
-                    │
-                    │ JSON
-                    ▼
-             ┌──────────────┐
-             │   FastAPI    │
-             │     API      │
-             └──────┬───────┘
-                    │
-           ┌────────┴────────┐
-           ▼                 ▼
-    Conversation         Analytics
-       State               Agent
-                             │
-                             ▼
-                        Tool Layer
-                             │
-                             ▼
-                          SQLite
-                             │
-                             ▼
-                      Deterministic
-                         Results
-                             │
-                             ▼
-                       LLM Synthesis
-                             │
-                             ▼
-                    Structured Response
-                             │
-                ┌────────────┴────────────┐
-                ▼                         ▼
-             Answer                   Chart Data
-                │                         │
-                └────────────┬────────────┘
-                             ▼
-                         React UI
-```
-
----
-
-# 42. Summary
-
-The CPG Analytics Copilot API provides a thin but structured REST layer around the analytics agent.
-
-The primary endpoint is:
-
-```text
-POST /api/chat
-```
-
-while:
-
-```text
-GET /health
-GET /readiness
-```
-
-provide operational health and readiness signals.
-
-The API provides:
-
-* validated inputs
-* conversation context
-* agent orchestration
-* deterministic analytics results
-* structured visualization data
-* request tracing
-* controlled errors
-* configurable CORS
-* a clear backend/frontend boundary
-
-The central design principle is:
-
-> **The API should expose business capabilities and structured application contracts, while hiding infrastructure and implementation details from the client.**
-
-This creates a clean foundation for evolving the training project toward a production-style enterprise AI application.
+The conversation rename operation is exposed through the conversation
+lifecycle API used by the frontend; its exact HTTP route should be kept
+aligned with the implementation in `main.py` and
+`frontend/src/services/api.ts`.
