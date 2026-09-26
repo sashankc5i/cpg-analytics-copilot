@@ -27,9 +27,15 @@ export interface ChatResponse {
 }
 
 
+export type ChatMessageType =
+  | "normal"
+  | "challenge";
+
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   toolsUsed?: string[];
   visualization?: Visualization | null;
+  messageType?: ChatMessageType;
 }

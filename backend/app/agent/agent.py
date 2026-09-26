@@ -24,7 +24,8 @@ class AnalyticsAgent:
             )
 
         self.client = Groq(
-            api_key=settings.groq_api_key
+            api_key=settings.groq_api_key,
+            max_retries=0,
         )
 
         self.model = settings.groq_model
@@ -34,17 +35,6 @@ class AnalyticsAgent:
         user_message: str,
         history: list | None = None,
     ):
-        """
-        Execute the analytics agent.
-
-        Supports:
-        - conversational context
-        - single-tool questions
-        - multi-tool investigations
-        - structured tool results
-        - evidence-based synthesis
-        """
-
         messages = [
             {
                 "role": "system",
@@ -87,7 +77,9 @@ class AnalyticsAgent:
 
             if not assistant_message.tool_calls:
                 return {
-                    "answer": assistant_message.content,
+                    "answer": (
+                        assistant_message.content
+                    ),
                     "tools_used": tools_used,
                     "tool_results": tool_results,
                     "messages": messages,
@@ -116,8 +108,8 @@ class AnalyticsAgent:
                     )
 
                     try:
-                        parsed_result = json.loads(
-                            result
+                        parsed_result = (
+                            json.loads(result)
                         )
                     except json.JSONDecodeError:
                         parsed_result = result
@@ -157,7 +149,8 @@ class AnalyticsAgent:
                 )
 
         raise RuntimeError(
-            "Agent exceeded maximum tool-calling iterations."
+            "Agent exceeded maximum "
+            "tool-calling iterations."
         )
 
 
