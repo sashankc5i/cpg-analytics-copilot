@@ -1,7 +1,19 @@
-import { useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import ChatWindow from "./components/ChatWindow";
+
 import {
+  createConversation,
+  getConversation,
+  listConversations,
+  renameConversation,
+  archiveConversation,
+  unarchiveConversation,
+  deleteConversation,
   sendMessage,
   streamChallenge,
   streamInvestigation,
@@ -9,13 +21,20 @@ import {
   type InvestigationStreamEvent,
 } from "./services/api";
 
-import type { ChatMessage } from "./types/chat";
+import type {
+  ChatMessage,
+  ConversationSummary,
+} from "./types/chat";
 
 
 type WorkspaceMode =
   | "copilot"
   | "investigate";
 
+
+/* =====================================================
+ * BRAND
+ * ===================================================== */
 
 function BrandMark() {
   return (
@@ -30,6 +49,10 @@ function BrandMark() {
   );
 }
 
+
+/* =====================================================
+ * SIDEBAR ICON
+ * ===================================================== */
 
 function SidebarIcon({
   type,
@@ -115,52 +138,86 @@ function SidebarIcon({
 }
 
 
+/* =====================================================
+ * APP
+ * ===================================================== */
+
 function App() {
 
   /*
    * ------------------------------------------------
-   * WORKSPACE MESSAGE STATE
+   * CONVERSATION STATE
    * ------------------------------------------------
    *
-   * Copilot and Investigation intentionally have
-   * separate message histories.
+   * One conversation is shared by the entire workspace.
    *
-   * Challenge reports belong to the Investigation
-   * workspace because they challenge an existing
-   * investigation conclusion.
+   * Copilot
+   * Investigation
+   * Challenge
+   *
+   * all operate against the same conversation ID.
    */
 
   const [
-    copilotMessages,
-    setCopilotMessages,
-  ] = useState<ChatMessage[]>([]);
+    activeConversationId,
+    setActiveConversationId,
+  ] = useState<string | null>(null);
 
 
   const [
-    investigationMessages,
-    setInvestigationMessages,
+    conversations,
+    setConversations,
+  ] = useState<ConversationSummary[]>([]);
+
+
+  const [
+    conversationLoading,
+    setConversationLoading,
+  ] = useState(true);
+
+
+  const [
+    showArchived,
+    setShowArchived,
+  ] = useState(false);
+
+
+  const [
+    openConversationMenuId,
+    setOpenConversationMenuId,
+  ] = useState<string | null>(null);
+
+
+  /*
+   * React StrictMode intentionally runs effects twice
+   * during development. This guard prevents startup
+   * from creating duplicate conversations.
+   */
+  const initializationStartedRef =
+    useRef(false);
+
+
+  /*
+   * ------------------------------------------------
+   * MESSAGE STATE
+   * ------------------------------------------------
+   *
+   * Messages now represent the active conversation,
+   * rather than separate Copilot and Investigation
+   * histories.
+   */
+
+  const [
+    messages,
+    setMessages,
   ] = useState<ChatMessage[]>([]);
 
 
   /*
    * ------------------------------------------------
-   * WORKSPACE SESSION IDs
+   * COMPOSER STATE
    * ------------------------------------------------
    */
-
-  const [
-    copilotConversationId,
-  ] = useState(
-    () => `copilot-${Date.now()}`
-  );
-
-
-  const [
-    investigationConversationId,
-  ] = useState(
-    () => `investigation-${Date.now()}`
-  );
-
 
   const [
     input,
@@ -190,63 +247,851 @@ function App() {
 
   /*
    * ------------------------------------------------
-   * VISIBLE MESSAGE COLLECTION
-   * ------------------------------------------------
-   */
-
-  const messages =
-    mode === "copilot"
-      ? copilotMessages
-      : investigationMessages;
-
-
-  /*
-   * ------------------------------------------------
    * INVESTIGATION STATE
    * ------------------------------------------------
    *
-   * Challenge Mode is only available after the
-   * Investigation workspace has produced an answer.
+   * This is intentionally UI state.
+   *
+   * The authoritative investigation memory lives
+   * in the backend InvestigationSessionManager.
    */
 
-  const investigationHasConclusion =
-    investigationMessages.some(
-      (message) =>
-        message.role === "assistant" &&
-        message.content.trim().length > 0
-    );
+  const [
+    investigationHasConclusion,
+    setInvestigationHasConclusion,
+  ] = useState(false);
 
 
   /*
    * ------------------------------------------------
-   * COPILOT MESSAGE HELPERS
+   * CONVERSATION TITLE HELPERS
    * ------------------------------------------------
    */
 
-  function addCopilotMessage(
-    message: ChatMessage
+  function buildConversationTitle(
+    message: string
   ) {
 
-    setCopilotMessages(
-      (previous) => [
-        ...previous,
-        message,
-      ]
+    const cleaned =
+      message
+        .replace(/\s+/g, " ")
+        .trim();
+
+    if (!cleaned) {
+      return "New Chat";
+    }
+
+    if (cleaned.length <= 52) {
+      return cleaned;
+    }
+
+    return `${cleaned.slice(0, 49).trim()}...`;
+  }
+
+
+  async function renameFromFirstMessage(
+    conversationId: string,
+    message: string
+  ) {
+
+    const title =
+      buildConversationTitle(message);
+
+    try {
+
+      await renameConversation(
+        conversationId,
+        { title }
+      );
+
+      setConversations(
+        (previous) =>
+          previous
+            .map((item) =>
+              item.conversation_id ===
+              conversationId
+                ? {
+                    ...item,
+                    title,
+                    updated_at:
+                      new Date().toISOString(),
+                  }
+                : item
+            )
+            .sort(
+              (a, b) =>
+                new Date(
+                  b.updated_at
+                ).getTime() -
+                new Date(
+                  a.updated_at
+                ).getTime()
+            )
+      );
+
+    } catch (err) {
+      console.error(
+        "Unable to rename conversation:",
+        err
+      );
+    }
+  }
+
+
+  async function normalizeConversationTitles(
+    summaries: ConversationSummary[]
+  ) {
+
+    const normalized =
+      await Promise.all(
+        summaries.map(async (summary) => {
+
+          if (
+            summary.title !==
+            "New Chat"
+          ) {
+            return summary;
+          }
+
+          try {
+
+            const conversation =
+              await getConversation(
+                summary.conversation_id
+              );
+
+            const firstUserMessage =
+              conversation.history.find(
+                (message) =>
+                  message.role ===
+                  "user" &&
+                  message.content.trim()
+                    .length > 0
+              );
+
+            if (!firstUserMessage) {
+              return summary;
+            }
+
+            const title =
+              buildConversationTitle(
+                firstUserMessage.content
+              );
+
+            await renameConversation(
+              summary.conversation_id,
+              { title }
+            );
+
+            return {
+              ...summary,
+              title,
+            };
+
+          } catch (err) {
+
+            console.error(
+              "Unable to normalize conversation title:",
+              err
+            );
+
+            return summary;
+          }
+        })
+      );
+
+    return normalized.sort(
+      (a, b) =>
+        new Date(
+          b.updated_at
+        ).getTime() -
+        new Date(
+          a.updated_at
+        ).getTime()
     );
   }
 
 
   /*
    * ------------------------------------------------
-   * INVESTIGATION MESSAGE HELPERS
+   * LOAD CONVERSATIONS ON STARTUP
    * ------------------------------------------------
    */
 
-  function addInvestigationMessage(
+  useEffect(() => {
+
+    if (initializationStartedRef.current) {
+      return;
+    }
+
+    initializationStartedRef.current = true;
+
+    async function initializeConversation() {
+
+      try {
+
+        setConversationLoading(true);
+        setError(null);
+
+
+        const existing =
+          await listConversations(false);
+
+
+        /*
+         * If conversations already exist,
+         * load the most recently updated one.
+         */
+
+        if (existing.length > 0) {
+
+          const normalized =
+            await normalizeConversationTitles(
+              existing
+            );
+
+          setConversations(normalized);
+
+          const latest =
+            normalized[0];
+
+          await loadConversation(
+            latest.conversation_id
+          );
+
+          return;
+        }
+
+
+        /*
+         * No conversations exist.
+         *
+         * Create the first one.
+         */
+
+        const created =
+          await createConversation({
+            title: "New Chat",
+          });
+
+
+        setConversations([
+          {
+            conversation_id:
+              created.conversation_id,
+
+            title:
+              created.title,
+
+            created_at:
+              created.created_at,
+
+            updated_at:
+              created.updated_at,
+
+            archived:
+              created.archived,
+          },
+        ]);
+
+
+        setActiveConversationId(
+          created.conversation_id
+        );
+
+
+        setMessages(
+          created.history || []
+        );
+
+
+      } catch (err) {
+
+        console.error(err);
+
+        setError(
+          "Unable to load conversations. Check that the API is running."
+        );
+
+      } finally {
+
+        setConversationLoading(false);
+      }
+    }
+
+
+    initializeConversation();
+
+  }, []);
+
+
+  /*
+   * ------------------------------------------------
+   * LOAD A CONVERSATION
+   * ------------------------------------------------
+   */
+
+  async function loadConversation(
+    conversationId: string
+  ) {
+
+    try {
+
+      setConversationLoading(true);
+      setError(null);
+
+
+      const conversation =
+        await getConversation(
+          conversationId
+        );
+
+
+      setActiveConversationId(
+        conversation.conversation_id
+      );
+
+
+      setMessages(
+        conversation.history || []
+      );
+
+
+      /*
+       * Determine whether the currently loaded
+       * conversation contains an assistant response.
+       *
+       * This gives the Investigation workspace a
+       * reasonable initial state.
+       *
+       * The backend remains the authoritative source
+       * for challenge eligibility.
+       */
+
+      const hasAssistantMessage =
+        conversation.history.some(
+          (message) =>
+            message.role === "assistant" &&
+            message.content.trim().length > 0
+        );
+
+
+      setInvestigationHasConclusion(
+        hasAssistantMessage
+      );
+
+
+    } catch (err) {
+
+      console.error(err);
+
+      setError(
+        "Unable to load the selected conversation."
+      );
+
+    } finally {
+
+      setConversationLoading(false);
+    }
+  }
+
+
+  /*
+   * ------------------------------------------------
+   * CREATE NEW CHAT
+   * ------------------------------------------------
+   */
+
+  async function handleNewConversation() {
+
+    if (loading) {
+      return;
+    }
+
+
+    try {
+
+      setError(null);
+      setConversationLoading(true);
+
+
+      const conversation =
+        await createConversation({
+          title: "New Chat",
+        });
+
+
+      const summary: ConversationSummary = {
+        conversation_id:
+          conversation.conversation_id,
+
+        title:
+          conversation.title,
+
+        created_at:
+          conversation.created_at,
+
+        updated_at:
+          conversation.updated_at,
+
+        archived:
+          conversation.archived,
+      };
+
+
+      setConversations(
+        (previous) => [
+          summary,
+          ...previous.filter(
+            (item) =>
+              item.conversation_id !==
+              summary.conversation_id
+          ),
+        ]
+      );
+
+
+      setActiveConversationId(
+        conversation.conversation_id
+      );
+
+
+      setMessages(
+        conversation.history || []
+      );
+
+
+      setInvestigationHasConclusion(
+        false
+      );
+
+
+      setMode("copilot");
+
+
+    } catch (err) {
+
+      console.error(err);
+
+      setError(
+        "Unable to create a new conversation."
+      );
+
+    } finally {
+
+      setConversationLoading(false);
+    }
+  }
+
+
+  /*
+   * ------------------------------------------------
+   * CONVERSATION ACTIONS
+   * ------------------------------------------------
+   */
+
+  async function handleRenameConversation(
+    conversationId: string,
+    currentTitle: string
+  ) {
+
+    const nextTitle = window.prompt(
+      "Rename conversation",
+      currentTitle === "New Chat"
+        ? ""
+        : currentTitle
+    );
+
+    if (nextTitle === null) {
+      return;
+    }
+
+    const title = nextTitle
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!title) {
+      setError(
+        "Conversation title cannot be empty."
+      );
+      return;
+    }
+
+    if (title.length > 200) {
+      setError(
+        "Conversation title cannot exceed 200 characters."
+      );
+      return;
+    }
+
+    try {
+      setConversationLoading(true);
+      setError(null);
+
+      const renamed =
+        await renameConversation(
+          conversationId,
+          { title }
+        );
+
+      setConversations(
+        (previous) =>
+          previous
+            .map((item) =>
+              item.conversation_id ===
+              conversationId
+                ? {
+                    ...item,
+                    title: renamed.title,
+                    updated_at:
+                      renamed.updated_at,
+                  }
+                : item
+            )
+            .sort(
+              (a, b) =>
+                new Date(
+                  b.updated_at
+                ).getTime() -
+                new Date(
+                  a.updated_at
+                ).getTime()
+            )
+      );
+
+      setOpenConversationMenuId(null);
+
+    } catch (err) {
+      console.error(err);
+      setError(
+        "Unable to rename the conversation."
+      );
+    } finally {
+      setConversationLoading(false);
+    }
+  }
+
+
+  /*
+   * ------------------------------------------------
+   * ARCHIVE / RESTORE / DELETE
+   * ------------------------------------------------
+   */
+
+  async function activateFallbackConversation(
+    remaining: ConversationSummary[]
+  ) {
+
+    const next =
+      remaining.find(
+        (item) => !item.archived
+      );
+
+    if (next) {
+      await loadConversation(
+        next.conversation_id
+      );
+      return;
+    }
+
+    const created =
+      await createConversation({
+        title: "New Chat",
+      });
+
+    const summary: ConversationSummary = {
+      conversation_id:
+        created.conversation_id,
+      title: created.title,
+      created_at: created.created_at,
+      updated_at: created.updated_at,
+      archived: created.archived,
+    };
+
+    setConversations([summary]);
+    setActiveConversationId(
+      created.conversation_id
+    );
+    setMessages(
+      created.history || []
+    );
+    setInvestigationHasConclusion(false);
+    setMode("copilot");
+  }
+
+
+  async function handleArchiveConversation(
+    conversationId: string
+  ) {
+
+    if (loading) {
+      return;
+    }
+
+    try {
+      setConversationLoading(true);
+      setError(null);
+
+      await archiveConversation(
+        conversationId
+      );
+
+      const remaining =
+        conversations.filter(
+          (item) =>
+            item.conversation_id !==
+            conversationId
+        );
+
+      setConversations(remaining);
+      setOpenConversationMenuId(null);
+
+      if (
+        activeConversationId ===
+        conversationId
+      ) {
+        setActiveConversationId(null);
+        setMessages([]);
+        setInvestigationHasConclusion(
+          false
+        );
+        await activateFallbackConversation(
+          remaining
+        );
+      }
+
+    } catch (err) {
+      console.error(err);
+      setError(
+        "Unable to archive the conversation."
+      );
+    } finally {
+      setConversationLoading(false);
+    }
+  }
+
+
+  async function handleUnarchiveConversation(
+    conversationId: string
+  ) {
+
+    if (loading) {
+      return;
+    }
+
+    try {
+      setConversationLoading(true);
+      setError(null);
+
+      const restored =
+        await unarchiveConversation(
+          conversationId
+        );
+
+      if (showArchived) {
+        setConversations(
+          (previous) =>
+            previous.filter(
+              (item) =>
+                item.conversation_id !==
+                conversationId
+            )
+        );
+      } else {
+        setConversations(
+          (previous) =>
+            [
+              restored,
+              ...previous.filter(
+                (item) =>
+                  item.conversation_id !==
+                  conversationId
+              ),
+            ]
+        );
+      }
+
+      setOpenConversationMenuId(null);
+
+    } catch (err) {
+      console.error(err);
+      setError(
+        "Unable to restore the conversation."
+      );
+    } finally {
+      setConversationLoading(false);
+    }
+  }
+
+
+  async function handleDeleteConversation(
+    conversationId: string
+  ) {
+
+    if (loading) {
+      return;
+    }
+
+    const confirmed =
+      window.confirm(
+        "Delete this conversation permanently? This cannot be undone."
+      );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setConversationLoading(true);
+      setError(null);
+
+      await deleteConversation(
+        conversationId
+      );
+
+      const remaining =
+        conversations.filter(
+          (item) =>
+            item.conversation_id !==
+            conversationId
+        );
+
+      setConversations(remaining);
+      setOpenConversationMenuId(null);
+
+      if (
+        activeConversationId ===
+        conversationId
+      ) {
+        setActiveConversationId(null);
+        setMessages([]);
+        setInvestigationHasConclusion(
+          false
+        );
+        await activateFallbackConversation(
+          remaining
+        );
+      }
+
+    } catch (err) {
+      console.error(err);
+      setError(
+        "Unable to delete the conversation."
+      );
+    } finally {
+      setConversationLoading(false);
+    }
+  }
+
+
+  async function handleToggleArchived() {
+
+    if (loading) {
+      return;
+    }
+
+    try {
+      setConversationLoading(true);
+      setError(null);
+
+      const nextShowArchived =
+        !showArchived;
+
+      const updated =
+        await listConversations(
+          nextShowArchived
+        );
+
+      const normalized =
+        await normalizeConversationTitles(
+          updated.filter((item) =>
+            nextShowArchived
+              ? item.archived
+              : !item.archived
+          )
+        );
+
+      setConversations(normalized);
+      setShowArchived(
+        nextShowArchived
+      );
+      setOpenConversationMenuId(null);
+
+    } catch (err) {
+      console.error(err);
+      setError(
+        "Unable to load archived conversations."
+      );
+    } finally {
+      setConversationLoading(false);
+    }
+  }
+
+
+  /*
+   * ------------------------------------------------
+   * UPDATE LOCAL CONVERSATION LIST
+   * ------------------------------------------------
+   *
+   * The backend updates updated_at whenever a
+   * conversation receives a message.
+   *
+   * We update the frontend list after a successful
+   * response so the current conversation remains
+   * visible.
+   */
+
+  function touchActiveConversation(
+    conversationId: string
+  ) {
+
+    setConversations(
+      (previous) => {
+
+        const existing =
+          previous.find(
+            (item) =>
+              item.conversation_id ===
+              conversationId
+          );
+
+
+        if (!existing) {
+          return previous;
+        }
+
+
+        const updated: ConversationSummary = {
+          ...existing,
+          updated_at:
+            new Date().toISOString(),
+        };
+
+
+        return [
+          updated,
+          ...previous.filter(
+            (item) =>
+              item.conversation_id !==
+              conversationId
+          ),
+        ];
+      }
+    );
+  }
+
+
+  /*
+   * ------------------------------------------------
+   * MESSAGE HELPERS
+   * ------------------------------------------------
+   */
+
+  function addMessage(
     message: ChatMessage
   ) {
 
-    setInvestigationMessages(
+    setMessages(
       (previous) => [
         ...previous,
         message,
@@ -272,7 +1117,21 @@ function App() {
       input.trim();
 
 
-    if (!message || loading) {
+    if (
+      !message ||
+      loading ||
+      conversationLoading
+    ) {
+      return;
+    }
+
+
+    if (!activeConversationId) {
+
+      setError(
+        "No active conversation is available."
+      );
+
       return;
     }
 
@@ -281,24 +1140,14 @@ function App() {
 
 
     /*
-     * Add the user's message to the
-     * CURRENT workspace only.
+     * Add the user's message immediately so
+     * the interface feels responsive.
      */
 
-    if (mode === "copilot") {
-
-      addCopilotMessage({
-        role: "user",
-        content: message,
-      });
-
-    } else {
-
-      addInvestigationMessage({
-        role: "user",
-        content: message,
-      });
-    }
+    addMessage({
+      role: "user",
+      content: message,
+    });
 
 
     setInput("");
@@ -319,18 +1168,34 @@ function App() {
           await sendMessage({
             message,
             conversation_id:
-              copilotConversationId,
+              activeConversationId,
           });
 
 
-        addCopilotMessage({
+        addMessage({
           role: "assistant",
-          content: response.answer,
+          content:
+            response.answer,
+
           toolsUsed:
             response.tools_used,
+
           visualization:
             response.visualization,
         });
+
+
+        if (messages.length === 0) {
+          void renameFromFirstMessage(
+            activeConversationId,
+            message
+          );
+        }
+
+        touchActiveConversation(
+          activeConversationId
+        );
+
 
       } catch (err) {
 
@@ -366,7 +1231,7 @@ function App() {
         {
           message,
           conversation_id:
-            investigationConversationId,
+            activeConversationId,
         },
 
         (
@@ -383,6 +1248,30 @@ function App() {
           );
         }
       );
+
+
+      /*
+       * A successful investigation means the
+       * conversation now has an investigation
+       * conclusion that can be challenged.
+       */
+
+      if (messages.length === 0) {
+        void renameFromFirstMessage(
+          activeConversationId,
+          message
+        );
+      }
+
+      setInvestigationHasConclusion(
+        true
+      );
+
+
+      touchActiveConversation(
+        activeConversationId
+      );
+
 
     } catch (err) {
 
@@ -420,12 +1309,10 @@ function App() {
 
 
     /*
-     * The investigation plan is internal workflow
+     * Plan and hypotheses are internal workflow
      * information.
      *
-     * Hypotheses are also currently kept out of the
-     * normal chat stream because the final synthesis
-     * already incorporates them.
+     * The final synthesis incorporates them.
      */
 
     if (
@@ -450,7 +1337,7 @@ function App() {
         !assistantMessageCreated
       ) {
 
-        addInvestigationMessage({
+        addMessage({
           role: "assistant",
           content: "",
           messageType: "normal",
@@ -466,8 +1353,8 @@ function App() {
 
 
     /*
-     * Append every streamed token to the
-     * Investigation assistant message.
+     * Append streamed tokens to the investigation
+     * assistant message.
      */
 
     if (
@@ -495,7 +1382,7 @@ function App() {
         !assistantMessageCreated
       ) {
 
-        addInvestigationMessage({
+        addMessage({
           role: "assistant",
           content: token,
           messageType: "normal",
@@ -508,7 +1395,7 @@ function App() {
       }
 
 
-      setInvestigationMessages(
+      setMessages(
         (previous) => {
 
           if (
@@ -533,7 +1420,7 @@ function App() {
 
           /*
            * Only append to the assistant
-           * message.
+           * investigation message.
            */
 
           if (
@@ -606,7 +1493,8 @@ function App() {
 
     if (
       loading ||
-      !investigationHasConclusion
+      !investigationHasConclusion ||
+      !activeConversationId
     ) {
       return;
     }
@@ -625,17 +1513,16 @@ function App() {
       await streamChallenge(
         {
           /*
-           * The backend does NOT use this as the
-           * original conclusion.
-           *
-           * It retrieves the latest investigation
-           * from the server-side session manager.
+           * The backend retrieves the latest
+           * investigation from server-side
+           * investigation memory.
            */
+
           message:
             "Challenge my conclusion",
 
           conversation_id:
-            investigationConversationId,
+            activeConversationId,
         },
 
         (
@@ -652,6 +1539,7 @@ function App() {
           );
         }
       );
+
 
     } catch (err) {
 
@@ -683,9 +1571,6 @@ function App() {
     /*
      * These events represent internal challenge
      * workflow information.
-     *
-     * We currently keep them out of the chat and
-     * display the final streamed challenge report.
      */
 
     if (
@@ -705,10 +1590,8 @@ function App() {
     /*
      * Start a NEW assistant message.
      *
-     * This is important:
-     *
-     * We must NOT append the challenge response
-     * to the previous investigation conclusion.
+     * The challenge must never be appended to the
+     * original investigation conclusion.
      */
 
     if (
@@ -720,7 +1603,7 @@ function App() {
         !challengeMessageCreated
       ) {
 
-        addInvestigationMessage({
+        addMessage({
           role: "assistant",
           content: "",
           messageType: "challenge",
@@ -763,7 +1646,7 @@ function App() {
         !challengeMessageCreated
       ) {
 
-        addInvestigationMessage({
+        addMessage({
           role: "assistant",
           content: token,
           messageType: "challenge",
@@ -776,7 +1659,7 @@ function App() {
       }
 
 
-      setInvestigationMessages(
+      setMessages(
         (previous) => {
 
           if (
@@ -931,6 +1814,202 @@ function App() {
 
 
         <div className="sidebar-section-label">
+          CONVERSATIONS
+        </div>
+
+
+        <button
+          type="button"
+          className="new-chat-button"
+          onClick={
+            handleNewConversation
+          }
+          disabled={
+            loading ||
+            conversationLoading
+          }
+        >
+          <SidebarIcon type="chat" />
+          <span>New Chat</span>
+        </button>
+
+
+        <div className="conversation-toolbar">
+          <span className="conversation-toolbar-label">
+            {showArchived
+              ? "ARCHIVED"
+              : "RECENT"}
+          </span>
+
+          <button
+            type="button"
+            className="conversation-filter"
+            onClick={handleToggleArchived}
+            disabled={
+              loading ||
+              conversationLoading
+            }
+          >
+            {showArchived
+              ? "Show recent"
+              : "Show archived"}
+          </button>
+        </div>
+
+
+        <div
+          className="conversation-list"
+          onClick={() =>
+            setOpenConversationMenuId(null)
+          }
+        >
+          {conversations.length === 0 && (
+            <div className="conversation-empty">
+              {showArchived
+                ? "No archived conversations"
+                : "No conversations yet"}
+            </div>
+          )}
+
+          {conversations.map(
+            (conversation) => (
+              <div
+                key={
+                  conversation.conversation_id
+                }
+                className={`conversation-item ${
+                  activeConversationId ===
+                  conversation.conversation_id
+                    ? "active"
+                    : ""
+                } ${
+                  openConversationMenuId ===
+                  conversation.conversation_id
+                    ? "menu-open"
+                    : ""
+                }`}
+                onClick={(event) =>
+                  event.stopPropagation()
+                }
+              >
+                <button
+                  type="button"
+                  className="conversation-select"
+                  onClick={() => {
+                    setOpenConversationMenuId(null);
+                    void loadConversation(
+                      conversation.conversation_id
+                    );
+                  }}
+                  disabled={
+                    loading ||
+                    conversationLoading
+                  }
+                >
+                  <span className="conversation-title">
+                    {conversation.title}
+                  </span>
+
+                  {conversation.archived && (
+                    <span className="conversation-archived-badge">
+                      Archived
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  className="conversation-menu-trigger"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setOpenConversationMenuId(
+                      (current) =>
+                        current ===
+                        conversation.conversation_id
+                          ? null
+                          : conversation.conversation_id
+                    );
+                  }}
+                  disabled={
+                    loading ||
+                    conversationLoading
+                  }
+                  title="Conversation actions"
+                  aria-label={`Actions for ${conversation.title}`}
+                  aria-expanded={
+                    openConversationMenuId ===
+                    conversation.conversation_id
+                  }
+                >
+                  ⋮
+                </button>
+
+                {openConversationMenuId ===
+                  conversation.conversation_id && (
+                  <div
+                    className="conversation-menu"
+                    onClick={(event) =>
+                      event.stopPropagation()
+                    }
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleRenameConversation(
+                          conversation.conversation_id,
+                          conversation.title
+                        )
+                      }
+                    >
+                      Rename
+                    </button>
+
+                    {conversation.archived ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void handleUnarchiveConversation(
+                            conversation.conversation_id
+                          )
+                        }
+                      >
+                        Restore
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void handleArchiveConversation(
+                            conversation.conversation_id
+                          )
+                        }
+                      >
+                        Archive
+                      </button>
+                    )}
+
+                    <div className="conversation-menu-divider" />
+
+                    <button
+                      type="button"
+                      className="conversation-menu-danger"
+                      onClick={() =>
+                        void handleDeleteConversation(
+                          conversation.conversation_id
+                        )
+                      }
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          )}
+        </div>
+
+
+        <div className="sidebar-section-label">
           WORKSPACE
         </div>
 
@@ -950,7 +2029,10 @@ function App() {
             onClick={() =>
               setMode("copilot")
             }
-            disabled={loading}
+            disabled={
+              loading ||
+              conversationLoading
+            }
           >
 
             <SidebarIcon type="chat" />
@@ -972,7 +2054,10 @@ function App() {
             onClick={() =>
               setMode("investigate")
             }
-            disabled={loading}
+            disabled={
+              loading ||
+              conversationLoading
+            }
           >
 
             <SidebarIcon
@@ -1122,7 +2207,10 @@ function App() {
 
             <ChatWindow
               messages={messages}
-              loading={loading}
+              loading={
+                loading ||
+                conversationLoading
+              }
               mode={mode}
             />
 
@@ -1131,9 +2219,6 @@ function App() {
              * ------------------------------------------------
              * CHALLENGE ACTION
              * ------------------------------------------------
-             *
-             * Only available in Investigation Mode after
-             * an investigation has produced a conclusion.
              */}
 
             {mode === "investigate" &&
@@ -1146,7 +2231,10 @@ function App() {
                     onClick={
                       handleChallenge
                     }
-                    disabled={loading}
+                    disabled={
+                      loading ||
+                      conversationLoading
+                    }
                   >
 
                     <span>
@@ -1161,6 +2249,7 @@ function App() {
 
                   </button>
 
+
                   <p className="challenge-note">
                     Test the conclusion against
                     supporting, contradictory, and
@@ -1171,52 +2260,53 @@ function App() {
               )}
 
 
-            {messages.length === 0 && (
-              <section className="quick-area">
+            {messages.length === 0 &&
+              !conversationLoading && (
+                <section className="quick-area">
 
-                <div className="quick-heading">
+                  <div className="quick-heading">
 
-                  <span>
-                    START WITH A QUESTION
-                  </span>
+                    <span>
+                      START WITH A QUESTION
+                    </span>
 
-                  <span className="quick-heading-line" />
+                    <span className="quick-heading-line" />
 
-                </div>
+                  </div>
 
 
-                <div className="quick-actions">
+                  <div className="quick-actions">
 
-                  {quickQuestions.map(
-                    (question) => (
+                    {quickQuestions.map(
+                      (question) => (
 
-                      <button
-                        key={question}
-                        type="button"
-                        onClick={() =>
-                          handleSuggestion(
-                            question
-                          )
-                        }
-                      >
+                        <button
+                          key={question}
+                          type="button"
+                          onClick={() =>
+                            handleSuggestion(
+                              question
+                            )
+                          }
+                        >
 
-                        <span>
-                          {question}
-                        </span>
+                          <span>
+                            {question}
+                          </span>
 
-                        <span className="quick-arrow">
-                          →
-                        </span>
+                          <span className="quick-arrow">
+                            →
+                          </span>
 
-                      </button>
+                        </button>
 
-                    )
-                  )}
+                      )
+                    )}
 
-                </div>
+                  </div>
 
-              </section>
-            )}
+                </section>
+              )}
 
 
             {error && (
@@ -1228,7 +2318,9 @@ function App() {
 
             <form
               className="composer"
-              onSubmit={handleSubmit}
+              onSubmit={
+                handleSubmit
+              }
             >
 
               <div className="composer-mode">
@@ -1256,7 +2348,10 @@ function App() {
                     ? "Ask Nexa about your business..."
                     : "Describe the business problem you want to investigate..."
                 }
-                disabled={loading}
+                disabled={
+                  loading ||
+                  conversationLoading
+                }
                 aria-label="Business question"
               />
 
@@ -1265,7 +2360,9 @@ function App() {
                 type="submit"
                 disabled={
                   loading ||
-                  !input.trim()
+                  conversationLoading ||
+                  !input.trim() ||
+                  !activeConversationId
                 }
                 aria-label="Send question"
               >

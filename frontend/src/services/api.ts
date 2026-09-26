@@ -3,26 +3,141 @@ import axios from "axios";
 import type {
   ChatRequest,
   ChatResponse,
+  Conversation,
+  ConversationSummary,
+  CreateConversationRequest,
+  RenameConversationRequest,
 } from "../types/chat";
 
 
+const API_BASE_URL =
+  "http://127.0.0.1:8000";
+
+
 const api = axios.create({
-  baseURL: "http://127.0.0.1:8000",
+  baseURL: API_BASE_URL,
   headers: {
     "Content-Type": "application/json",
   },
 });
 
 
+/* =====================================================
+ * STANDARD COPILOT CHAT
+ * ===================================================== */
+
 export async function sendMessage(
   request: ChatRequest
 ): Promise<ChatResponse> {
-  const response = await api.post<ChatResponse>(
-    "/api/chat",
-    request
-  );
+
+  const response =
+    await api.post<ChatResponse>(
+      "/api/chat",
+      request
+    );
 
   return response.data;
+}
+
+
+/* =====================================================
+ * CONVERSATIONS
+ * ===================================================== */
+
+export async function createConversation(
+  request: CreateConversationRequest = {}
+): Promise<Conversation> {
+
+  const response =
+    await api.post<Conversation>(
+      "/api/conversations",
+      request
+    );
+
+  return response.data;
+}
+
+
+export async function listConversations(
+  includeArchived = false
+): Promise<ConversationSummary[]> {
+
+  const response =
+    await api.get<ConversationSummary[]>(
+      "/api/conversations",
+      {
+        params: {
+          include_archived:
+            includeArchived,
+        },
+      }
+    );
+
+  return response.data;
+}
+
+
+export async function getConversation(
+  conversationId: string
+): Promise<Conversation> {
+
+  const response =
+    await api.get<Conversation>(
+      `/api/conversations/${conversationId}`
+    );
+
+  return response.data;
+}
+
+
+export async function renameConversation(
+  conversationId: string,
+  request: RenameConversationRequest
+): Promise<ConversationSummary> {
+
+  const response =
+    await api.patch<ConversationSummary>(
+      `/api/conversations/${conversationId}`,
+      request
+    );
+
+  return response.data;
+}
+
+
+export async function archiveConversation(
+  conversationId: string
+): Promise<ConversationSummary> {
+
+  const response =
+    await api.post<ConversationSummary>(
+      `/api/conversations/${conversationId}/archive`
+    );
+
+  return response.data;
+}
+
+
+export async function unarchiveConversation(
+  conversationId: string
+): Promise<ConversationSummary> {
+
+  const response =
+    await api.post<ConversationSummary>(
+      `/api/conversations/${conversationId}/unarchive`
+    );
+
+  return response.data;
+}
+
+
+export async function deleteConversation(
+  conversationId: string
+): Promise<void> {
+
+  await api.delete(
+    `/api/conversations/${conversationId}`
+  );
 }
 
 
@@ -51,18 +166,19 @@ export async function streamInvestigation(
   ) => void
 ): Promise<void> {
 
-  const response = await fetch(
-    "http://127.0.0.1:8000/api/investigate/stream",
-    {
-      method: "POST",
+  const response =
+    await fetch(
+      `${API_BASE_URL}/api/investigate/stream`,
+      {
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+        headers: {
+          "Content-Type": "application/json",
+        },
 
-      body: JSON.stringify(request),
-    }
-  );
+        body: JSON.stringify(request),
+      }
+    );
 
 
   if (!response.ok) {
@@ -141,6 +257,7 @@ export async function streamInvestigation(
    * The final chunk may not end with a newline.
    * Process whatever remains in the buffer.
    */
+
   if (buffer.trim()) {
 
     const parsed =
@@ -182,18 +299,19 @@ export async function streamChallenge(
   ) => void
 ): Promise<void> {
 
-  const response = await fetch(
-    "http://127.0.0.1:8000/api/investigate/challenge/stream",
-    {
-      method: "POST",
+  const response =
+    await fetch(
+      `${API_BASE_URL}/api/investigate/challenge/stream`,
+      {
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+        headers: {
+          "Content-Type": "application/json",
+        },
 
-      body: JSON.stringify(request),
-    }
-  );
+        body: JSON.stringify(request),
+      }
+    );
 
 
   if (!response.ok) {
@@ -272,6 +390,7 @@ export async function streamChallenge(
    * The final chunk may not end with a newline.
    * Process whatever remains in the buffer.
    */
+
   if (buffer.trim()) {
 
     const parsed =

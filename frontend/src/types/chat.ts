@@ -39,3 +39,37 @@ export interface ChatMessage {
   visualization?: Visualization | null;
   messageType?: ChatMessageType;
 }
+
+
+/* =====================================================
+ * CONVERSATION
+ * ===================================================== */
+
+export interface Conversation {
+  conversation_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  archived: boolean;
+  history: ChatMessage[];
+}
+
+
+export interface ConversationSummary {
+  conversation_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  archived: boolean;
+}
+
+
+export interface CreateConversationRequest {
+  conversation_id?: string;
+  title?: string;
+}
+
+
+export interface RenameConversationRequest {
+  title: string;
+}

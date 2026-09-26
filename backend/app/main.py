@@ -1,4 +1,5 @@
 import json
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +29,10 @@ from app.middleware import request_logging_middleware
 from app.models.chat import ChatResponse
 
 
+# ---------------------------------------------------------------------------
+# Application Setup
+# ---------------------------------------------------------------------------
+
 configure_logging()
 
 logger = get_logger(__name__)
@@ -55,6 +60,11 @@ app.add_middleware(
 )
 
 
+# ---------------------------------------------------------------------------
+# Request Models
+# ---------------------------------------------------------------------------
+
+
 class ChatRequest(BaseModel):
     message: str = Field(
         ...,
@@ -67,6 +77,33 @@ class ChatRequest(BaseModel):
         min_length=1,
         max_length=100,
     )
+
+
+class ConversationCreateRequest(BaseModel):
+    conversation_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+    )
+
+    title: str = Field(
+        default="New Chat",
+        min_length=1,
+        max_length=200,
+    )
+
+
+class ConversationRenameRequest(BaseModel):
+    title: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Health Endpoints
+# ---------------------------------------------------------------------------
 
 
 @app.get("/health")
@@ -102,6 +139,180 @@ def readiness_check():
         )
 
 
+# ---------------------------------------------------------------------------
+# Conversation Management
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/conversations")
+def create_conversation(
+    request: ConversationCreateRequest,
+):
+    """
+    Create a new conversation session.
+
+    The caller may provide a conversation ID.
+    If no ID is provided, the backend generates one.
+    """
+
+    conversation_id = (
+        request.conversation_id
+        or str(uuid4())
+    )
+
+    session = conversation_manager.create(
+        conversation_id=conversation_id,
+        title=request.title,
+    )
+
+    logger.info(
+        "conversation_created | conversation_id=%s",
+        conversation_id,
+    )
+
+    return conversation_manager.get_conversation(
+        conversation_id
+    )
+
+
+@app.get("/api/conversations")
+def list_conversations(
+    include_archived: bool = False,
+):
+    """
+    List conversation sessions.
+
+    Archived conversations are excluded by default.
+    """
+
+    return conversation_manager.list_sessions(
+        include_archived=include_archived,
+    )
+
+
+@app.get("/api/conversations/{conversation_id}")
+def get_conversation(
+    conversation_id: str,
+):
+    """
+    Return a complete conversation including history.
+    """
+
+    return conversation_manager.get_conversation(
+        conversation_id
+    )
+
+
+@app.patch("/api/conversations/{conversation_id}")
+def rename_conversation(
+    conversation_id: str,
+    request: ConversationRenameRequest,
+):
+    """
+    Rename an existing conversation.
+    """
+
+    try:
+        session = conversation_manager.rename(
+            conversation_id,
+            request.title,
+        )
+
+        return {
+            "conversation_id": session["conversation_id"],
+            "title": session["title"],
+            "created_at": session["created_at"],
+            "updated_at": session["updated_at"],
+            "archived": session["archived"],
+        }
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+
+@app.post(
+    "/api/conversations/{conversation_id}/archive"
+)
+def archive_conversation(
+    conversation_id: str,
+):
+    """
+    Archive a conversation.
+    """
+
+    session = conversation_manager.archive(
+        conversation_id
+    )
+
+    return {
+        "conversation_id": session["conversation_id"],
+        "title": session["title"],
+        "created_at": session["created_at"],
+        "updated_at": session["updated_at"],
+        "archived": session["archived"],
+    }
+
+
+@app.post(
+    "/api/conversations/{conversation_id}/unarchive"
+)
+def unarchive_conversation(
+    conversation_id: str,
+):
+    """
+    Restore an archived conversation.
+    """
+
+    session = conversation_manager.unarchive(
+        conversation_id
+    )
+
+    return {
+        "conversation_id": session["conversation_id"],
+        "title": session["title"],
+        "created_at": session["created_at"],
+        "updated_at": session["updated_at"],
+        "archived": session["archived"],
+    }
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation(
+    conversation_id: str,
+):
+    """
+    Permanently delete a conversation session.
+    """
+
+    deleted = conversation_manager.delete(
+        conversation_id
+    )
+
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
+
+    logger.info(
+        "conversation_deleted | conversation_id=%s",
+        conversation_id,
+    )
+
+    return {
+        "conversation_id": conversation_id,
+        "deleted": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Standard Copilot Chat
+# ---------------------------------------------------------------------------
+
+
 @app.post(
     "/api/chat",
     response_model=ChatResponse,
@@ -110,6 +321,13 @@ def chat(
     request: ChatRequest,
     http_request: Request,
 ):
+    """
+    Execute a standard Copilot conversation.
+
+    The conversation ID determines which conversational
+    history is supplied to the agent.
+    """
+
     request_id = getattr(
         http_request.state,
         "request_id",
@@ -138,6 +356,10 @@ def chat(
             tool_results=result["tool_results"],
         )
 
+        # ---------------------------------------------------------------
+        # Store user message
+        # ---------------------------------------------------------------
+
         conversation_manager.add_message(
             request.conversation_id,
             {
@@ -145,6 +367,10 @@ def chat(
                 "content": request.message,
             },
         )
+
+        # ---------------------------------------------------------------
+        # Store assistant response
+        # ---------------------------------------------------------------
 
         conversation_manager.add_message(
             request.conversation_id,
@@ -208,6 +434,11 @@ def chat(
         )
 
 
+# ---------------------------------------------------------------------------
+# Investigation Mode
+# ---------------------------------------------------------------------------
+
+
 @app.post("/api/investigate/stream")
 def investigate_stream(
     request: ChatRequest,
@@ -217,8 +448,9 @@ def investigate_stream(
     Run Investigation Mode and stream the final
     synthesis to the client.
 
-    Investigation uses its own independent session
-    and hypothesis context.
+    Investigation uses the same conversation ID
+    as the standard Copilot session, while maintaining
+    its own analytical investigation memory.
     """
 
     request_id = getattr(
@@ -250,6 +482,10 @@ def investigate_stream(
             answer_parts = []
 
             try:
+                # -------------------------------------------------------
+                # Investigation started
+                # -------------------------------------------------------
+
                 yield (
                     json.dumps(
                         {
@@ -258,6 +494,10 @@ def investigate_stream(
                     )
                     + "\n"
                 )
+
+                # -------------------------------------------------------
+                # Investigation plan
+                # -------------------------------------------------------
 
                 yield (
                     json.dumps(
@@ -268,6 +508,10 @@ def investigate_stream(
                     )
                     + "\n"
                 )
+
+                # -------------------------------------------------------
+                # Hypotheses
+                # -------------------------------------------------------
 
                 yield (
                     json.dumps(
@@ -280,6 +524,10 @@ def investigate_stream(
                     + "\n"
                 )
 
+                # -------------------------------------------------------
+                # Answer streaming starts
+                # -------------------------------------------------------
+
                 yield (
                     json.dumps(
                         {
@@ -288,6 +536,10 @@ def investigate_stream(
                     )
                     + "\n"
                 )
+
+                # -------------------------------------------------------
+                # Stream synthesis
+                # -------------------------------------------------------
 
                 for chunk in stream_synthesis(
                     question,
@@ -308,6 +560,10 @@ def investigate_stream(
                     )
 
                 answer = "".join(answer_parts)
+
+                # -------------------------------------------------------
+                # Investigation-specific memory
+                # -------------------------------------------------------
 
                 investigation_session_manager.add_message(
                     request.conversation_id,
@@ -331,6 +587,39 @@ def investigate_stream(
                     evidence=evidence,
                     answer=answer,
                 )
+
+                # -------------------------------------------------------
+                # Shared conversation memory
+                # -------------------------------------------------------
+                #
+                # Investigation is part of the overall conversation.
+                #
+                # Therefore the question and final answer are also
+                # persisted in ConversationManager.
+                #
+                # The detailed analytical state remains separately
+                # stored in InvestigationSessionManager.
+                # -------------------------------------------------------
+
+                conversation_manager.add_message(
+                    request.conversation_id,
+                    {
+                        "role": "user",
+                        "content": request.message,
+                    },
+                )
+
+                conversation_manager.add_message(
+                    request.conversation_id,
+                    {
+                        "role": "assistant",
+                        "content": answer,
+                    },
+                )
+
+                # -------------------------------------------------------
+                # Investigation completed
+                # -------------------------------------------------------
 
                 yield (
                     json.dumps(
@@ -396,6 +685,11 @@ def investigate_stream(
         )
 
 
+# ---------------------------------------------------------------------------
+# Challenge My Conclusion
+# ---------------------------------------------------------------------------
+
+
 @app.post("/api/investigate/challenge/stream")
 def challenge_stream(
     request: ChatRequest,
@@ -405,8 +699,8 @@ def challenge_stream(
     Challenge the latest completed investigation
     associated with the supplied conversation ID.
 
-    The original conclusion is retrieved from the
-    InvestigationSessionManager rather than being
+    The original conclusion and evidence are retrieved
+    from InvestigationSessionManager rather than being
     supplied by the frontend.
     """
 
@@ -438,6 +732,10 @@ def challenge_stream(
             answer_parts = []
 
             try:
+                # -------------------------------------------------------
+                # Challenge started
+                # -------------------------------------------------------
+
                 yield (
                     json.dumps(
                         {
@@ -446,6 +744,10 @@ def challenge_stream(
                     )
                     + "\n"
                 )
+
+                # -------------------------------------------------------
+                # Claims
+                # -------------------------------------------------------
 
                 yield (
                     json.dumps(
@@ -458,6 +760,10 @@ def challenge_stream(
                     + "\n"
                 )
 
+                # -------------------------------------------------------
+                # Challenge plan
+                # -------------------------------------------------------
+
                 yield (
                     json.dumps(
                         {
@@ -468,6 +774,10 @@ def challenge_stream(
                     )
                     + "\n"
                 )
+
+                # -------------------------------------------------------
+                # Challenge evidence
+                # -------------------------------------------------------
 
                 yield (
                     json.dumps(
@@ -480,6 +790,10 @@ def challenge_stream(
                     + "\n"
                 )
 
+                # -------------------------------------------------------
+                # Answer starts
+                # -------------------------------------------------------
+
                 yield (
                     json.dumps(
                         {
@@ -488,6 +802,10 @@ def challenge_stream(
                     )
                     + "\n"
                 )
+
+                # -------------------------------------------------------
+                # Stream challenge synthesis
+                # -------------------------------------------------------
 
                 for chunk in stream_challenge_synthesis(
                     question=question,
@@ -508,6 +826,10 @@ def challenge_stream(
                     )
 
                 answer = "".join(answer_parts)
+
+                # -------------------------------------------------------
+                # Challenge completed
+                # -------------------------------------------------------
 
                 yield (
                     json.dumps(
