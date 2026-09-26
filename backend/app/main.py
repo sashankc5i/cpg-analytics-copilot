@@ -219,10 +219,16 @@ def rename_conversation(
         )
 
         return {
-            "conversation_id": session["conversation_id"],
+            "conversation_id": session[
+                "conversation_id"
+            ],
             "title": session["title"],
-            "created_at": session["created_at"],
-            "updated_at": session["updated_at"],
+            "created_at": session[
+                "created_at"
+            ],
+            "updated_at": session[
+                "updated_at"
+            ],
             "archived": session["archived"],
         }
 
@@ -248,10 +254,16 @@ def archive_conversation(
     )
 
     return {
-        "conversation_id": session["conversation_id"],
+        "conversation_id": session[
+            "conversation_id"
+        ],
         "title": session["title"],
-        "created_at": session["created_at"],
-        "updated_at": session["updated_at"],
+        "created_at": session[
+            "created_at"
+        ],
+        "updated_at": session[
+            "updated_at"
+        ],
         "archived": session["archived"],
     }
 
@@ -271,10 +283,16 @@ def unarchive_conversation(
     )
 
     return {
-        "conversation_id": session["conversation_id"],
+        "conversation_id": session[
+            "conversation_id"
+        ],
         "title": session["title"],
-        "created_at": session["created_at"],
-        "updated_at": session["updated_at"],
+        "created_at": session[
+            "created_at"
+        ],
+        "updated_at": session[
+            "updated_at"
+        ],
         "archived": session["archived"],
     }
 
@@ -284,7 +302,8 @@ def delete_conversation(
     conversation_id: str,
 ):
     """
-    Permanently delete a conversation session.
+    Permanently delete a conversation session and any
+    investigation state associated with the same ID.
     """
 
     deleted = conversation_manager.delete(
@@ -297,9 +316,18 @@ def delete_conversation(
             detail="Conversation not found.",
         )
 
+    investigation_deleted = (
+        investigation_session_manager.delete(
+            conversation_id
+        )
+    )
+
     logger.info(
-        "conversation_deleted | conversation_id=%s",
+        "conversation_deleted | "
+        "conversation_id=%s | "
+        "investigation_state_deleted=%s",
         conversation_id,
+        investigation_deleted,
     )
 
     return {
@@ -591,7 +619,7 @@ def investigate_stream(
                 # -------------------------------------------------------
                 # Shared conversation memory
                 # -------------------------------------------------------
-                #
+
                 # Investigation is part of the overall conversation.
                 #
                 # Therefore the question and final answer are also

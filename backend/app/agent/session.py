@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
@@ -43,6 +44,10 @@ class ConversationManager:
     development phase. Persistent storage can be
     introduced later without changing the public
     conversation contract.
+
+    Returned conversation state is defensively copied
+    so callers cannot accidentally mutate the manager's
+    internal state.
     """
 
     def __init__(self):
@@ -78,13 +83,15 @@ class ConversationManager:
         conversation_id: str,
     ) -> dict[str, Any]:
         """
-        Return a conversation.
+        Return the internal conversation session.
 
         A conversation is automatically created when the
         ID has not been seen before.
 
-        This preserves the previous behavior expected by
-        the existing agent and evaluation tests.
+        This method is intentionally used internally by the
+        manager for state mutation. Callers that only need
+        readable conversation state should use get_history()
+        or get_conversation(), which return defensive copies.
         """
 
         if conversation_id not in self.sessions:
@@ -102,6 +109,10 @@ class ConversationManager:
 
         Full message history is intentionally excluded.
         The sidebar only needs conversation metadata.
+
+        A new list containing new metadata dictionaries is
+        returned so callers cannot mutate the internal
+        session collection through the result.
         """
 
         sessions = []
@@ -227,14 +238,23 @@ class ConversationManager:
         conversation_id: str,
     ) -> list[dict[str, str]]:
         """
-        Return the message history for a conversation.
+        Return a defensive copy of the message history.
+
+        The caller receives a snapshot of the current history
+        rather than the manager's internal list.
+
+        This prevents external code from accidentally changing
+        conversation state by mutating the returned list or
+        message dictionaries.
         """
 
         session = self.get_session(
             conversation_id
         )
 
-        return session["history"]
+        return deepcopy(
+            session["history"]
+        )
 
     def add_message(
         self,
@@ -252,7 +272,10 @@ class ConversationManager:
             conversation_id
         )
 
-        session["history"].append(message)
+        session["history"].append(
+            deepcopy(message)
+        )
+
         session["updated_at"] = _utc_now()
 
     # ============================================================
@@ -264,26 +287,18 @@ class ConversationManager:
         conversation_id: str,
     ) -> dict[str, Any]:
         """
-        Return the complete conversation, including
-        message history.
+        Return a defensive copy of the complete conversation,
+        including message history.
+
+        The returned object can safely be modified by callers
+        without mutating the manager's internal state.
         """
 
         session = self.get_session(
             conversation_id
         )
 
-        return {
-            "conversation_id": session[
-                "conversation_id"
-            ],
-            "title": session["title"],
-            "created_at": session["created_at"],
-            "updated_at": session["updated_at"],
-            "archived": session["archived"],
-            "history": list(
-                session["history"]
-            ),
-        }
+        return deepcopy(session)
 
     # ============================================================
     # Reset

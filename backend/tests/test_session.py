@@ -2,7 +2,9 @@ from app.agent.session import (
     ConversationManager,
 )
 
+
 ConversationSessionManager = ConversationManager
+
 
 def test_create_conversation():
     manager = ConversationManager()
@@ -65,6 +67,86 @@ def test_add_message_updates_history():
     assert (
         history[0]["content"]
         == "Why did revenue decline?"
+    )
+
+
+def test_get_history_returns_defensive_copy():
+    manager = ConversationManager()
+
+    manager.add_message(
+        "conversation-1",
+        {
+            "role": "user",
+            "content": "Show revenue",
+        },
+    )
+
+    history = manager.get_history(
+        "conversation-1"
+    )
+
+    history.clear()
+
+    stored_history = manager.get_history(
+        "conversation-1"
+    )
+
+    assert len(stored_history) == 1
+    assert (
+        stored_history[0]["content"]
+        == "Show revenue"
+    )
+
+
+def test_get_history_protects_message_objects():
+    manager = ConversationManager()
+
+    manager.add_message(
+        "conversation-1",
+        {
+            "role": "user",
+            "content": "Show revenue",
+        },
+    )
+
+    history = manager.get_history(
+        "conversation-1"
+    )
+
+    history[0]["content"] = "Modified externally"
+
+    stored_history = manager.get_history(
+        "conversation-1"
+    )
+
+    assert (
+        stored_history[0]["content"]
+        == "Show revenue"
+    )
+
+
+def test_add_message_copies_input_message():
+    manager = ConversationManager()
+
+    message = {
+        "role": "user",
+        "content": "Show revenue",
+    }
+
+    manager.add_message(
+        "conversation-1",
+        message,
+    )
+
+    message["content"] = "Modified externally"
+
+    history = manager.get_history(
+        "conversation-1"
+    )
+
+    assert (
+        history[0]["content"]
+        == "Show revenue"
     )
 
 
@@ -218,5 +300,49 @@ def test_get_conversation_returns_messages():
 
     assert (
         conversation["history"][0]["content"]
+        == "Show revenue"
+    )
+
+
+def test_get_conversation_returns_defensive_copy():
+    manager = ConversationSessionManager()
+
+    manager.create(
+        "conversation-1",
+        title="Revenue Analysis",
+    )
+
+    manager.add_message(
+        "conversation-1",
+        {
+            "role": "user",
+            "content": "Show revenue",
+        },
+    )
+
+    conversation = manager.get_conversation(
+        "conversation-1"
+    )
+
+    conversation["title"] = "Modified externally"
+    conversation["history"][0][
+        "content"
+    ] = "Modified externally"
+
+    stored_conversation = (
+        manager.get_conversation(
+            "conversation-1"
+        )
+    )
+
+    assert (
+        stored_conversation["title"]
+        == "Revenue Analysis"
+    )
+
+    assert (
+        stored_conversation["history"][0][
+            "content"
+        ]
         == "Show revenue"
     )

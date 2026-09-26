@@ -1,4 +1,5 @@
 from collections import defaultdict
+from copy import deepcopy
 from typing import Any
 
 
@@ -24,9 +25,15 @@ class InvestigationSessionManager:
 
     This manager is keyed by conversation/investigation ID.
 
-    It is intentionally in-memory for the current
-    development phase. Persistent investigation
-    storage can be introduced later.
+    The manager intentionally keeps investigation state
+    in-memory for the current development phase.
+
+    Public read operations return defensive copies so
+    callers cannot accidentally mutate internal state.
+
+    Input objects are also copied when stored so the
+    manager owns its internal state independently from
+    caller-owned mutable objects.
     """
 
     def __init__(self):
@@ -43,6 +50,11 @@ class InvestigationSessionManager:
 
         A new session is created automatically when
         the investigation ID has not been seen before.
+
+        This method remains an internal mutation-oriented
+        access point. Read-oriented public methods such as
+        get_history() and get_latest_investigation()
+        return defensive copies.
         """
 
         return self.sessions[
@@ -56,11 +68,16 @@ class InvestigationSessionManager:
         """
         Return conversational history for an
         investigation session.
+
+        A defensive copy is returned so callers cannot
+        mutate the stored investigation history directly.
         """
 
-        return self.sessions[
-            investigation_id
-        ]["history"]
+        return deepcopy(
+            self.sessions[
+                investigation_id
+            ]["history"]
+        )
 
     def add_message(
         self,
@@ -69,11 +86,17 @@ class InvestigationSessionManager:
     ):
         """
         Add a message to the investigation history.
+
+        The message is copied before storage so later
+        mutations to the caller-owned dictionary cannot
+        modify the stored investigation state.
         """
 
         self.sessions[
             investigation_id
-        ]["history"].append(message)
+        ]["history"].append(
+            deepcopy(message)
+        )
 
     def update_investigation(
         self,
@@ -85,14 +108,24 @@ class InvestigationSessionManager:
     ):
         """
         Store the latest investigation result.
+
+        Mutable inputs are copied before storage so the
+        investigation manager owns its internal analytical
+        state independently from caller-owned objects.
         """
 
         session = self.sessions[
             investigation_id
         ]
 
-        session["latest_plan"] = plan
-        session["latest_evidence"] = evidence
+        session["latest_plan"] = deepcopy(
+            plan
+        )
+
+        session["latest_evidence"] = deepcopy(
+            evidence
+        )
+
         session["latest_answer"] = answer
 
     def get_latest_investigation(
@@ -101,8 +134,10 @@ class InvestigationSessionManager:
     ) -> dict[str, Any]:
         """
         Return the latest analytical investigation
-        state without exposing the internal session
-        object directly.
+        state without exposing internal mutable state.
+
+        A deep defensive copy is returned because evidence
+        can contain nested dictionaries and lists.
         """
 
         session = self.get_session(
@@ -110,10 +145,10 @@ class InvestigationSessionManager:
         )
 
         return {
-            "plan": list(
+            "plan": deepcopy(
                 session["latest_plan"]
             ),
-            "evidence": dict(
+            "evidence": deepcopy(
                 session["latest_evidence"]
             ),
             "answer": session["latest_answer"],
@@ -130,12 +165,37 @@ class InvestigationSessionManager:
 
         return investigation_id in self.sessions
 
+    def delete(
+        self,
+        investigation_id: str,
+    ) -> bool:
+        """
+        Permanently delete an investigation session.
+
+        Returns True when a session existed and was
+        deleted. Returns False when the investigation
+        ID did not exist.
+
+        Unlike clear(), this removes the investigation
+        session completely.
+        """
+
+        if investigation_id not in self.sessions:
+            return False
+
+        del self.sessions[
+            investigation_id
+        ]
+
+        return True
+
     def clear(
         self,
         investigation_id: str,
     ):
         """
-        Reset a single investigation session.
+        Reset a single investigation session while
+        preserving the investigation ID.
         """
 
         self.sessions[

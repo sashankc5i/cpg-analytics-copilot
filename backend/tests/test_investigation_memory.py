@@ -335,3 +335,269 @@ def test_investigation_sessions_remain_isolated():
             }
         ]
     )
+
+
+def test_get_history_returns_defensive_copy():
+    investigation_session_manager.add_message(
+        "investigation-1",
+        {
+            "role": "user",
+            "content": "Question A",
+        },
+    )
+
+    history = (
+        investigation_session_manager
+        .get_history("investigation-1")
+    )
+
+    history.clear()
+
+    assert (
+        investigation_session_manager
+        .get_history("investigation-1")
+        == [
+            {
+                "role": "user",
+                "content": "Question A",
+            }
+        ]
+    )
+
+
+def test_get_history_protects_message_objects():
+    investigation_session_manager.add_message(
+        "investigation-1",
+        {
+            "role": "user",
+            "content": "Question A",
+        },
+    )
+
+    history = (
+        investigation_session_manager
+        .get_history("investigation-1")
+    )
+
+    history[0]["content"] = "Modified externally."
+
+    stored_history = (
+        investigation_session_manager
+        .get_history("investigation-1")
+    )
+
+    assert stored_history[0]["content"] == (
+        "Question A"
+    )
+
+
+def test_add_message_copies_input_message():
+    message = {
+        "role": "user",
+        "content": "Question A",
+    }
+
+    investigation_session_manager.add_message(
+        "investigation-1",
+        message,
+    )
+
+    message["content"] = "Modified after storage."
+
+    history = (
+        investigation_session_manager
+        .get_history("investigation-1")
+    )
+
+    assert history[0]["content"] == (
+        "Question A"
+    )
+
+
+def test_update_investigation_copies_inputs():
+    plan = [
+        "revenue_trend",
+        "regional_performance",
+    ]
+
+    evidence = {
+        "revenue_trend": {
+            "direction": "down",
+            "change_pct": -12.5,
+        }
+    }
+
+    investigation_session_manager.update_investigation(
+        "investigation-1",
+        plan=plan,
+        evidence=evidence,
+        answer="Revenue declined.",
+    )
+
+    plan.append("product_performance")
+
+    evidence["revenue_trend"]["change_pct"] = 999
+
+    stored = (
+        investigation_session_manager
+        .get_latest_investigation(
+            "investigation-1"
+        )
+    )
+
+    assert stored["plan"] == [
+        "revenue_trend",
+        "regional_performance",
+    ]
+
+    assert stored["evidence"] == {
+        "revenue_trend": {
+            "direction": "down",
+            "change_pct": -12.5,
+        }
+    }
+
+
+def test_get_latest_investigation_returns_deep_copy():
+    investigation_session_manager.update_investigation(
+        "investigation-1",
+        plan=["revenue_trend"],
+        evidence={
+            "revenue_trend": {
+                "direction": "down",
+                "change_pct": -12.5,
+                "details": {
+                    "region": "South",
+                },
+            }
+        },
+        answer="Revenue declined.",
+    )
+
+    investigation = (
+        investigation_session_manager
+        .get_latest_investigation(
+            "investigation-1"
+        )
+    )
+
+    investigation["plan"].append(
+        "regional_performance"
+    )
+
+    investigation["evidence"][
+        "revenue_trend"
+    ]["change_pct"] = 999
+
+    investigation["evidence"][
+        "revenue_trend"
+    ]["details"]["region"] = "West"
+
+    stored = (
+        investigation_session_manager
+        .get_latest_investigation(
+            "investigation-1"
+        )
+    )
+
+    assert stored["plan"] == [
+        "revenue_trend"
+    ]
+
+    assert stored["evidence"] == {
+        "revenue_trend": {
+            "direction": "down",
+            "change_pct": -12.5,
+            "details": {
+                "region": "South",
+            },
+        }
+    }
+
+
+def test_delete_investigation():
+    investigation_session_manager.add_message(
+        "investigation-1",
+        {
+            "role": "user",
+            "content": "Question A",
+        },
+    )
+
+    assert (
+        investigation_session_manager
+        .has_investigation(
+            "investigation-1"
+        )
+        is True
+    )
+
+    deleted = (
+        investigation_session_manager
+        .delete("investigation-1")
+    )
+
+    assert deleted is True
+
+    assert (
+        investigation_session_manager
+        .has_investigation(
+            "investigation-1"
+        )
+        is False
+    )
+
+
+def test_delete_missing_investigation():
+    deleted = (
+        investigation_session_manager
+        .delete("does-not-exist")
+    )
+
+    assert deleted is False
+
+
+def test_clear_resets_investigation_without_removing_session():
+    investigation_session_manager.add_message(
+        "investigation-1",
+        {
+            "role": "user",
+            "content": "Question A",
+        },
+    )
+
+    investigation_session_manager.update_investigation(
+        "investigation-1",
+        plan=["revenue_trend"],
+        evidence={"revenue": "down"},
+        answer="Revenue declined.",
+    )
+
+    investigation_session_manager.clear(
+        "investigation-1"
+    )
+
+    assert (
+        investigation_session_manager
+        .has_investigation(
+            "investigation-1"
+        )
+        is True
+    )
+
+    investigation = (
+        investigation_session_manager
+        .get_latest_investigation(
+            "investigation-1"
+        )
+    )
+
+    assert investigation["plan"] == []
+    assert investigation["evidence"] == {}
+    assert investigation["answer"] == ""
+
+    assert (
+        investigation_session_manager
+        .get_history("investigation-1")
+        == []
+    )

@@ -196,26 +196,66 @@ AVAILABLE_FUNCTIONS = {
 }
 
 
+def _validate_arguments(
+    arguments,
+) -> dict:
+    """
+    Validate and normalize tool arguments.
+
+    Tool arguments originate from an LLM and therefore
+    must not be trusted to have the expected structure.
+
+    Tools currently accept JSON objects only.
+    """
+
+    if arguments is None:
+        return {}
+
+    if not isinstance(arguments, dict):
+        raise ValueError(
+            "Tool arguments must be a JSON object."
+        )
+
+    return arguments
+
+
 def execute_tool(
     tool_name: str,
-    arguments: dict,
+    arguments: dict | None,
 ):
+    """
+    Execute an approved analytics tool.
+
+    The function name must exist in AVAILABLE_FUNCTIONS
+    and arguments must be a dictionary.
+    """
+
     if tool_name not in AVAILABLE_FUNCTIONS:
         raise ValueError(
             f"Unknown tool: {tool_name}"
         )
 
+    validated_arguments = _validate_arguments(
+        arguments
+    )
+
     function = AVAILABLE_FUNCTIONS[tool_name]
 
     if tool_name == "get_top_products":
-        limit = arguments.get("limit", 10)
+        limit = validated_arguments.get(
+            "limit",
+            10,
+        )
 
         if not isinstance(limit, int):
             raise ValueError(
                 "Product limit must be an integer."
             )
 
-        if limit < 1 or limit > MAX_PRODUCT_LIMIT:
+        if (
+            limit < 1
+            or limit > MAX_PRODUCT_LIMIT
+        ):
             raise ValueError(
                 "Product limit must be between "
                 "1 and 50."
@@ -228,8 +268,13 @@ def execute_tool(
 
 def execute_tool_as_json(
     tool_name: str,
-    arguments: dict,
+    arguments: dict | None,
 ):
+    """
+    Execute an approved analytics tool and serialize
+    the result as JSON.
+    """
+
     result = execute_tool(
         tool_name,
         arguments,

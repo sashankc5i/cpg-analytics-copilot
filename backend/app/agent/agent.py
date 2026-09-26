@@ -1,4 +1,5 @@
 import json
+import logging
 
 from groq import Groq
 
@@ -13,6 +14,8 @@ from app.config import get_settings
 settings = get_settings()
 
 MAX_TOOL_ITERATIONS = settings.max_tool_iterations
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyticsAgent:
@@ -29,6 +32,118 @@ class AnalyticsAgent:
         )
 
         self.model = settings.groq_model
+
+    def _call_llm(
+        self,
+        messages: list,
+    ):
+        """
+        Call the LLM and validate the provider response.
+
+        The agent treats the LLM as an external dependency.
+        Provider failures and malformed responses are converted
+        into controlled RuntimeError exceptions so callers do
+        not have to understand provider-specific exceptions.
+        """
+
+        try:
+            response = (
+                self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=TOOL_DEFINITIONS,
+                    tool_choice="auto",
+                    temperature=0,
+                )
+            )
+
+        except Exception as error:
+            logger.exception(
+                "agent_llm_call_failed"
+            )
+
+            raise RuntimeError(
+                "The analytics model could not be reached."
+            ) from error
+
+        if not response:
+            logger.error(
+                "agent_llm_empty_response"
+            )
+
+            raise RuntimeError(
+                "The analytics model returned an empty response."
+            )
+
+        choices = getattr(
+            response,
+            "choices",
+            None,
+        )
+
+        if not choices:
+            logger.error(
+                "agent_llm_response_missing_choices"
+            )
+
+            raise RuntimeError(
+                "The analytics model returned an invalid response."
+            )
+
+        assistant_message = getattr(
+            choices[0],
+            "message",
+            None,
+        )
+
+        if assistant_message is None:
+            logger.error(
+                "agent_llm_response_missing_message"
+            )
+
+            raise RuntimeError(
+                "The analytics model returned an invalid message."
+            )
+
+        return assistant_message
+
+    def _validate_final_answer(
+        self,
+        assistant_message,
+    ) -> str:
+        """
+        Validate the final assistant response.
+
+        A final response must contain non-empty text.
+        """
+
+        content = getattr(
+            assistant_message,
+            "content",
+            None,
+        )
+
+        if not isinstance(content, str):
+            logger.error(
+                "agent_llm_final_answer_invalid_type"
+            )
+
+            raise RuntimeError(
+                "The analytics model returned an invalid answer."
+            )
+
+        answer = content.strip()
+
+        if not answer:
+            logger.error(
+                "agent_llm_final_answer_empty"
+            )
+
+            raise RuntimeError(
+                "The analytics model returned an empty answer."
+            )
+
+        return answer
 
     def run(
         self,
@@ -57,18 +172,8 @@ class AnalyticsAgent:
 
         for _ in range(MAX_TOOL_ITERATIONS):
 
-            response = (
-                self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=TOOL_DEFINITIONS,
-                    tool_choice="auto",
-                    temperature=0,
-                )
-            )
-
-            assistant_message = (
-                response.choices[0].message
+            assistant_message = self._call_llm(
+                messages
             )
 
             messages.append(
@@ -76,10 +181,12 @@ class AnalyticsAgent:
             )
 
             if not assistant_message.tool_calls:
+                answer = self._validate_final_answer(
+                    assistant_message
+                )
+
                 return {
-                    "answer": (
-                        assistant_message.content
-                    ),
+                    "answer": answer,
                     "tools_used": tools_used,
                     "tool_results": tool_results,
                     "messages": messages,

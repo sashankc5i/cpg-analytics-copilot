@@ -2,6 +2,9 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.agent.session import conversation_manager
+from app.agent.investigation_session import (
+    investigation_session_manager,
+)
 
 
 client = TestClient(app)
@@ -9,6 +12,7 @@ client = TestClient(app)
 
 def setup_function():
     conversation_manager.sessions.clear()
+    investigation_session_manager.sessions.clear()
 
 
 def test_create_conversation():
@@ -192,9 +196,107 @@ def test_delete_conversation():
     assert get_response.status_code == 200
 
 
+def test_delete_conversation_also_deletes_investigation_state():
+    conversation_id = "delete-with-investigation"
+
+    client.post(
+        "/api/conversations",
+        json={
+            "conversation_id": conversation_id,
+            "title": "Delete Investigation",
+        },
+    )
+
+    investigation_session_manager.add_message(
+        conversation_id,
+        {
+            "role": "user",
+            "content": "Why is revenue declining?",
+        },
+    )
+
+    investigation_session_manager.update_investigation(
+        conversation_id,
+        plan=["revenue_trend"],
+        evidence={
+            "revenue_trend": {
+                "direction": "down",
+                "change_pct": -12.5,
+            }
+        },
+        answer="Revenue declined.",
+    )
+
+    assert (
+        investigation_session_manager
+        .has_investigation(conversation_id)
+        is True
+    )
+
+    response = client.delete(
+        f"/api/conversations/{conversation_id}"
+    )
+
+    assert response.status_code == 200
+
+    assert response.json() == {
+        "conversation_id": conversation_id,
+        "deleted": True,
+    }
+
+    assert (
+        investigation_session_manager
+        .has_investigation(conversation_id)
+        is False
+    )
+
+
+def test_delete_conversation_without_investigation_state():
+    conversation_id = "delete-without-investigation"
+
+    client.post(
+        "/api/conversations",
+        json={
+            "conversation_id": conversation_id,
+            "title": "Delete Conversation",
+        },
+    )
+
+    assert (
+        investigation_session_manager
+        .has_investigation(conversation_id)
+        is False
+    )
+
+    response = client.delete(
+        f"/api/conversations/{conversation_id}"
+    )
+
+    assert response.status_code == 200
+
+    assert response.json() == {
+        "conversation_id": conversation_id,
+        "deleted": True,
+    }
+
+    assert (
+        investigation_session_manager
+        .has_investigation(conversation_id)
+        is False
+    )
+
+
 def test_delete_missing_conversation():
     response = client.delete(
         "/api/conversations/does-not-exist"
     )
 
     assert response.status_code == 404
+
+    assert (
+        investigation_session_manager
+        .has_investigation(
+            "does-not-exist"
+        )
+        is False
+    )
