@@ -1,4 +1,7 @@
 from app.database.connection import get_connection
+from app.database.repositories.base import (
+    execute_repository_operation,
+)
 
 
 def get_overall_sales_data() -> dict:
@@ -15,7 +18,10 @@ def get_overall_sales_data() -> dict:
             FROM sales;
         """
 
-        result = connection.execute(query).fetchone()
+        result = execute_repository_operation(
+            "get_overall_sales_data",
+            lambda: connection.execute(query).fetchone(),
+        )
 
         return dict(result)
 
@@ -40,7 +46,10 @@ def get_sales_by_region_data() -> list[dict]:
             ORDER BY revenue DESC;
         """
 
-        results = connection.execute(query).fetchall()
+        results = execute_repository_operation(
+            "get_sales_by_region_data",
+            lambda: connection.execute(query).fetchall(),
+        )
 
         return [dict(row) for row in results]
 
@@ -57,13 +66,16 @@ def get_monthly_sales_trend_data() -> list[dict]:
                 strftime('%Y-%m', transaction_date) AS month,
                 COUNT(*) AS transactions,
                 SUM(quantity) AS units_sold,
-                ROUND(SUM(sales_amount), 2) AS revenue
-            FROM sales
+                ROUND(SUM(s.sales_amount), 2) AS revenue
+            FROM sales s
             GROUP BY month
             ORDER BY month;
         """
 
-        results = connection.execute(query).fetchall()
+        results = execute_repository_operation(
+            "get_monthly_sales_trend_data",
+            lambda: connection.execute(query).fetchall(),
+        )
 
         return [dict(row) for row in results]
 
@@ -84,7 +96,10 @@ def get_monthly_revenue_data() -> list[dict]:
             ORDER BY period;
         """
 
-        rows = connection.execute(query).fetchall()
+        rows = execute_repository_operation(
+            "get_monthly_revenue_data",
+            lambda: connection.execute(query).fetchall(),
+        )
 
         return [
             {
@@ -102,7 +117,9 @@ def get_monthly_revenue_data() -> list[dict]:
 
 def get_top_products_data(limit: int = 10) -> list[dict]:
     if not isinstance(limit, int):
-        raise ValueError("Product limit must be an integer.")
+        raise ValueError(
+            "Product limit must be an integer."
+        )
 
     if limit < 1 or limit > 50:
         raise ValueError(
@@ -132,10 +149,13 @@ def get_top_products_data(limit: int = 10) -> list[dict]:
             LIMIT ?;
         """
 
-        results = connection.execute(
-            query,
-            (limit,),
-        ).fetchall()
+        results = execute_repository_operation(
+            "get_top_products_data",
+            lambda: connection.execute(
+                query,
+                (limit,),
+            ).fetchall(),
+        )
 
         return [dict(row) for row in results]
 

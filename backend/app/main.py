@@ -4,8 +4,8 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel, Field, field_validator
+from app.agent.session import conversation_manager
 from app.agent.agent import agent
 from app.agent.challenge import (
     prepare_challenge,
@@ -18,12 +18,17 @@ from app.agent.investigation import (
 from app.agent.investigation_session import (
     investigation_session_manager,
 )
+from app.agent.session import (
+    ConversationNotFoundError,
+    conversation_manager,
+)
 from app.agent.session import conversation_manager
 from app.analytics.visualization import build_visualization
 from app.config import get_settings
 from app.logging_config import (
     configure_logging,
     get_logger,
+    get_request_id,
 )
 from app.middleware import request_logging_middleware
 from app.models.chat import ChatResponse
@@ -65,6 +70,29 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 
+def _strip_and_validate_text(
+    value: str,
+    field_name: str,
+) -> str:
+    """
+    Normalize a request string and reject blank values.
+
+    Pydantic performs type and length validation through
+    the Field definition. This helper handles the
+    semantic distinction between an empty string and a
+    whitespace-only string.
+    """
+
+    value = value.strip()
+
+    if not value:
+        raise ValueError(
+            f"{field_name} must not be blank."
+        )
+
+    return value
+
+
 class ChatRequest(BaseModel):
     message: str = Field(
         ...,
@@ -77,6 +105,28 @@ class ChatRequest(BaseModel):
         min_length=1,
         max_length=100,
     )
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(
+        cls,
+        value: str,
+    ) -> str:
+        return _strip_and_validate_text(
+            value,
+            "message",
+        )
+
+    @field_validator("conversation_id")
+    @classmethod
+    def validate_conversation_id(
+        cls,
+        value: str,
+    ) -> str:
+        return _strip_and_validate_text(
+            value,
+            "conversation_id",
+        )
 
 
 class ConversationCreateRequest(BaseModel):
@@ -92,6 +142,31 @@ class ConversationCreateRequest(BaseModel):
         max_length=200,
     )
 
+    @field_validator("conversation_id")
+    @classmethod
+    def validate_conversation_id(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        if value is None:
+            return None
+
+        return _strip_and_validate_text(
+            value,
+            "conversation_id",
+        )
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(
+        cls,
+        value: str,
+    ) -> str:
+        return _strip_and_validate_text(
+            value,
+            "title",
+        )
+
 
 class ConversationRenameRequest(BaseModel):
     title: str = Field(
@@ -99,6 +174,17 @@ class ConversationRenameRequest(BaseModel):
         min_length=1,
         max_length=200,
     )
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(
+        cls,
+        value: str,
+    ) -> str:
+        return _strip_and_validate_text(
+            value,
+            "title",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +202,11 @@ def health_check():
 
 
 @app.get("/readiness")
-def readiness_check():
+def readiness_check(http_request: Request):
+    request_id = get_request_id(
+    http_request,
+)
+
     try:
         if not settings.groq_api_key:
             raise RuntimeError(
@@ -130,11 +220,18 @@ def readiness_check():
         }
 
     except Exception as error:
+        logger.exception(
+            "readiness_check_failed | "
+            "request_id=%s",
+            request_id,
+        )
+
         raise HTTPException(
             status_code=503,
             detail={
                 "status": "not_ready",
-                "reason": str(error),
+                "message": "Service dependencies are not ready.",
+                "request_id": request_id,
             },
         )
 
@@ -189,20 +286,28 @@ def list_conversations(
         include_archived=include_archived,
     )
 
-
 @app.get("/api/conversations/{conversation_id}")
 def get_conversation(
     conversation_id: str,
 ):
     """
-    Return a complete conversation including history.
+    Return a complete existing conversation including history.
+
+    A missing conversation is treated as a missing API
+    resource rather than being implicitly created.
     """
 
-    return conversation_manager.get_conversation(
+    conversation = conversation_manager.get_existing(
         conversation_id
     )
 
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
 
+    return conversation
 @app.patch("/api/conversations/{conversation_id}")
 def rename_conversation(
     conversation_id: str,
@@ -219,16 +324,44 @@ def rename_conversation(
         )
 
         return {
-            "conversation_id": session[
-                "conversation_id"
-            ],
+            "conversation_id": session["conversation_id"],
             "title": session["title"],
-            "created_at": session[
-                "created_at"
-            ],
-            "updated_at": session[
-                "updated_at"
-            ],
+            "created_at": session["created_at"],
+            "updated_at": session["updated_at"],
+            "archived": session["archived"],
+        }
+
+    except ConversationNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+@app.patch("/api/conversations/{conversation_id}")
+def rename_conversation(
+    conversation_id: str,
+    request: ConversationRenameRequest,
+):
+    """
+    Rename an existing conversation.
+    """
+
+    try:
+        session = conversation_manager.rename(
+            conversation_id,
+            request.title,
+        )
+
+        return {
+            "conversation_id": session["conversation_id"],
+            "title": session["title"],
+            "created_at": session["created_at"],
+            "updated_at": session["updated_at"],
             "archived": session["archived"],
         }
 
@@ -246,28 +379,27 @@ def archive_conversation(
     conversation_id: str,
 ):
     """
-    Archive a conversation.
+    Archive an existing conversation.
     """
 
-    session = conversation_manager.archive(
-        conversation_id
-    )
+    try:
+        session = conversation_manager.archive(
+            conversation_id
+        )
 
-    return {
-        "conversation_id": session[
-            "conversation_id"
-        ],
-        "title": session["title"],
-        "created_at": session[
-            "created_at"
-        ],
-        "updated_at": session[
-            "updated_at"
-        ],
-        "archived": session["archived"],
-    }
+        return {
+            "conversation_id": session["conversation_id"],
+            "title": session["title"],
+            "created_at": session["created_at"],
+            "updated_at": session["updated_at"],
+            "archived": session["archived"],
+        }
 
-
+    except ConversationNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
 @app.post(
     "/api/conversations/{conversation_id}/unarchive"
 )
@@ -275,27 +407,27 @@ def unarchive_conversation(
     conversation_id: str,
 ):
     """
-    Restore an archived conversation.
+    Restore an existing archived conversation.
     """
 
-    session = conversation_manager.unarchive(
-        conversation_id
-    )
+    try:
+        session = conversation_manager.unarchive(
+            conversation_id
+        )
 
-    return {
-        "conversation_id": session[
-            "conversation_id"
-        ],
-        "title": session["title"],
-        "created_at": session[
-            "created_at"
-        ],
-        "updated_at": session[
-            "updated_at"
-        ],
-        "archived": session["archived"],
-    }
+        return {
+            "conversation_id": session["conversation_id"],
+            "title": session["title"],
+            "created_at": session["created_at"],
+            "updated_at": session["updated_at"],
+            "archived": session["archived"],
+        }
 
+    except ConversationNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(error),
+        )
 
 @app.delete("/api/conversations/{conversation_id}")
 def delete_conversation(
@@ -384,10 +516,6 @@ def chat(
             tool_results=result["tool_results"],
         )
 
-        # ---------------------------------------------------------------
-        # Store user message
-        # ---------------------------------------------------------------
-
         conversation_manager.add_message(
             request.conversation_id,
             {
@@ -395,10 +523,6 @@ def chat(
                 "content": request.message,
             },
         )
-
-        # ---------------------------------------------------------------
-        # Store assistant response
-        # ---------------------------------------------------------------
 
         conversation_manager.add_message(
             request.conversation_id,
@@ -446,7 +570,13 @@ def chat(
 
         raise HTTPException(
             status_code=500,
-            detail=str(error),
+            detail={
+                "message": (
+                    "The analytics service could not process "
+                    "the request."
+                ),
+                "request_id": request_id,
+            },
         )
 
     except Exception:
@@ -458,7 +588,10 @@ def chat(
 
         raise HTTPException(
             status_code=500,
-            detail="An unexpected error occurred.",
+            detail={
+                "message": "An unexpected error occurred.",
+                "request_id": request_id,
+            },
         )
 
 
@@ -510,10 +643,6 @@ def investigate_stream(
             answer_parts = []
 
             try:
-                # -------------------------------------------------------
-                # Investigation started
-                # -------------------------------------------------------
-
                 yield (
                     json.dumps(
                         {
@@ -522,10 +651,6 @@ def investigate_stream(
                     )
                     + "\n"
                 )
-
-                # -------------------------------------------------------
-                # Investigation plan
-                # -------------------------------------------------------
 
                 yield (
                     json.dumps(
@@ -536,10 +661,6 @@ def investigate_stream(
                     )
                     + "\n"
                 )
-
-                # -------------------------------------------------------
-                # Hypotheses
-                # -------------------------------------------------------
 
                 yield (
                     json.dumps(
@@ -552,10 +673,6 @@ def investigate_stream(
                     + "\n"
                 )
 
-                # -------------------------------------------------------
-                # Answer streaming starts
-                # -------------------------------------------------------
-
                 yield (
                     json.dumps(
                         {
@@ -564,10 +681,6 @@ def investigate_stream(
                     )
                     + "\n"
                 )
-
-                # -------------------------------------------------------
-                # Stream synthesis
-                # -------------------------------------------------------
 
                 for chunk in stream_synthesis(
                     question,
@@ -588,10 +701,6 @@ def investigate_stream(
                     )
 
                 answer = "".join(answer_parts)
-
-                # -------------------------------------------------------
-                # Investigation-specific memory
-                # -------------------------------------------------------
 
                 investigation_session_manager.add_message(
                     request.conversation_id,
@@ -616,19 +725,6 @@ def investigate_stream(
                     answer=answer,
                 )
 
-                # -------------------------------------------------------
-                # Shared conversation memory
-                # -------------------------------------------------------
-
-                # Investigation is part of the overall conversation.
-                #
-                # Therefore the question and final answer are also
-                # persisted in ConversationManager.
-                #
-                # The detailed analytical state remains separately
-                # stored in InvestigationSessionManager.
-                # -------------------------------------------------------
-
                 conversation_manager.add_message(
                     request.conversation_id,
                     {
@@ -644,10 +740,6 @@ def investigate_stream(
                         "content": answer,
                     },
                 )
-
-                # -------------------------------------------------------
-                # Investigation completed
-                # -------------------------------------------------------
 
                 yield (
                     json.dumps(
@@ -683,7 +775,12 @@ def investigate_stream(
                     json.dumps(
                         {
                             "type": "error",
-                            "data": str(error),
+                            "data": {
+                                "message": (
+                                    "The investigation could not be completed."
+                                ),
+                                "request_id": request_id,
+                            },
                         }
                     )
                     + "\n"
@@ -709,7 +806,10 @@ def investigate_stream(
 
         raise HTTPException(
             status_code=500,
-            detail=str(error),
+            detail={
+                "message": "Unable to start investigation.",
+                "request_id": request_id,
+            },
         )
 
 
@@ -760,10 +860,6 @@ def challenge_stream(
             answer_parts = []
 
             try:
-                # -------------------------------------------------------
-                # Challenge started
-                # -------------------------------------------------------
-
                 yield (
                     json.dumps(
                         {
@@ -772,10 +868,6 @@ def challenge_stream(
                     )
                     + "\n"
                 )
-
-                # -------------------------------------------------------
-                # Claims
-                # -------------------------------------------------------
 
                 yield (
                     json.dumps(
@@ -788,10 +880,6 @@ def challenge_stream(
                     + "\n"
                 )
 
-                # -------------------------------------------------------
-                # Challenge plan
-                # -------------------------------------------------------
-
                 yield (
                     json.dumps(
                         {
@@ -802,10 +890,6 @@ def challenge_stream(
                     )
                     + "\n"
                 )
-
-                # -------------------------------------------------------
-                # Challenge evidence
-                # -------------------------------------------------------
 
                 yield (
                     json.dumps(
@@ -818,10 +902,6 @@ def challenge_stream(
                     + "\n"
                 )
 
-                # -------------------------------------------------------
-                # Answer starts
-                # -------------------------------------------------------
-
                 yield (
                     json.dumps(
                         {
@@ -830,10 +910,6 @@ def challenge_stream(
                     )
                     + "\n"
                 )
-
-                # -------------------------------------------------------
-                # Stream challenge synthesis
-                # -------------------------------------------------------
 
                 for chunk in stream_challenge_synthesis(
                     question=question,
@@ -854,10 +930,6 @@ def challenge_stream(
                     )
 
                 answer = "".join(answer_parts)
-
-                # -------------------------------------------------------
-                # Challenge completed
-                # -------------------------------------------------------
 
                 yield (
                     json.dumps(
@@ -896,7 +968,12 @@ def challenge_stream(
                     json.dumps(
                         {
                             "type": "error",
-                            "data": str(error),
+                            "data": {
+                                "message": (
+                                    "The challenge could not be completed."
+                                ),
+                                "request_id": request_id,
+                            },
                         }
                     )
                     + "\n"

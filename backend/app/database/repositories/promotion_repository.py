@@ -1,4 +1,7 @@
 from app.database.connection import get_connection
+from app.database.repositories.base import (
+    execute_repository_operation,
+)
 
 
 def get_promotion_impact_data() -> list[dict]:
@@ -30,7 +33,10 @@ def get_promotion_impact_data() -> list[dict]:
             GROUP BY promotion_status;
         """
 
-        results = connection.execute(query).fetchall()
+        results = execute_repository_operation(
+            "get_promotion_impact_data",
+            lambda: connection.execute(query).fetchall(),
+        )
 
         return [dict(row) for row in results]
 

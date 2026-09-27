@@ -193,7 +193,11 @@ def test_delete_conversation():
         "/api/conversations/delete-test"
     )
 
-    assert get_response.status_code == 200
+    assert get_response.status_code == 404
+
+    assert get_response.json()["detail"] == (
+        "Conversation not found."
+    )
 
 
 def test_delete_conversation_also_deletes_investigation_state():
@@ -300,3 +304,248 @@ def test_delete_missing_conversation():
         )
         is False
     )
+
+def test_create_conversation_rejects_blank_title():
+    response = client.post(
+        "/api/conversations",
+        json={
+            "title": "   ",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_conversation_trims_title():
+    response = client.post(
+        "/api/conversations",
+        json={
+            "title": "  Sales Investigation  ",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == (
+        "Sales Investigation"
+    )
+
+
+def test_create_conversation_rejects_blank_custom_id():
+    response = client.post(
+        "/api/conversations",
+        json={
+            "conversation_id": "   ",
+            "title": "Valid Title",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_rename_conversation_rejects_blank_title():
+    client.post(
+        "/api/conversations",
+        json={
+            "conversation_id": "rename-validation",
+            "title": "Original Title",
+        },
+    )
+
+    response = client.patch(
+        "/api/conversations/rename-validation",
+        json={
+            "title": "   ",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_rename_conversation_trims_title():
+    client.post(
+        "/api/conversations",
+        json={
+            "conversation_id": "rename-trim",
+            "title": "Original Title",
+        },
+    )
+
+    response = client.patch(
+        "/api/conversations/rename-trim",
+        json={
+            "title": "  New Title  ",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "New Title"
+
+
+def test_create_conversation_preserves_valid_custom_id_with_whitespace_trimmed():
+    response = client.post(
+        "/api/conversations",
+        json={
+            "conversation_id": "  custom-session  ",
+            "title": "Custom Session",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["conversation_id"] == (
+        "custom-session"
+    )
+def test_get_missing_conversation_returns_404():
+    response = client.get(
+        "/api/conversations/does-not-exist"
+    )
+
+    assert response.status_code == 404
+
+    assert response.json()["detail"] == (
+        "Conversation not found."
+    )
+
+
+def test_get_deleted_conversation_returns_404():
+    conversation_id = "deleted-get-test"
+
+    create_response = client.post(
+        "/api/conversations",
+        json={
+            "conversation_id": conversation_id,
+            "title": "Temporary Chat",
+        },
+    )
+
+    assert create_response.status_code == 200
+
+    delete_response = client.delete(
+        f"/api/conversations/{conversation_id}"
+    )
+
+    assert delete_response.status_code == 200
+
+    get_response = client.get(
+        f"/api/conversations/{conversation_id}"
+    )
+
+    assert get_response.status_code == 404
+
+    assert get_response.json()["detail"] == (
+        "Conversation not found."
+    )
+def test_rename_missing_conversation_returns_404():
+    response = client.patch(
+        "/api/conversations/missing-id",
+        json={
+            "title": "New Name",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == (
+        "Conversation not found."
+    )
+
+
+def test_archive_missing_conversation_returns_404():
+    response = client.post(
+        "/api/conversations/missing-id/archive"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == (
+        "Conversation not found."
+    )
+
+
+def test_unarchive_missing_conversation_returns_404():
+    response = client.post(
+        "/api/conversations/missing-id/unarchive"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == (
+        "Conversation not found."
+    )
+def test_rename_missing_conversation_returns_404():
+    response = client.patch(
+        "/api/conversations/missing-id",
+        json={
+            "title": "New Name",
+        },
+    )
+
+    assert response.status_code == 404
+
+    assert response.json()["detail"] == (
+        "Conversation not found."
+    )
+
+
+def test_archive_missing_conversation_returns_404():
+    response = client.post(
+        "/api/conversations/missing-id/archive"
+    )
+
+    assert response.status_code == 404
+
+    assert response.json()["detail"] == (
+        "Conversation not found."
+    )
+
+
+def test_unarchive_missing_conversation_returns_404():
+    response = client.post(
+        "/api/conversations/missing-id/unarchive"
+    )
+
+    assert response.status_code == 404
+
+    assert response.json()["detail"] == (
+        "Conversation not found."
+    )
+
+
+def test_deleted_conversation_cannot_be_modified():
+    conversation_id = (
+        "deleted-modification-test"
+    )
+
+    client.post(
+        "/api/conversations",
+        json={
+            "conversation_id": conversation_id,
+            "title": "Temporary",
+        },
+    )
+
+    delete_response = client.delete(
+        f"/api/conversations/{conversation_id}"
+    )
+
+    assert delete_response.status_code == 200
+
+    rename_response = client.patch(
+        f"/api/conversations/{conversation_id}",
+        json={
+            "title": "Should Not Exist",
+        },
+    )
+
+    assert rename_response.status_code == 404
+
+    archive_response = client.post(
+        f"/api/conversations/{conversation_id}/archive"
+    )
+
+    assert archive_response.status_code == 404
+
+    unarchive_response = client.post(
+        f"/api/conversations/{conversation_id}/unarchive"
+    )
+
+    assert unarchive_response.status_code == 404

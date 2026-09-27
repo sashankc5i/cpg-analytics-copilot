@@ -3,10 +3,17 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+class ConversationNotFoundError(ValueError):
+    """
+    Raised when a conversation resource does not exist.
+    """
+
+
 def _utc_now() -> str:
     """
     Return the current UTC timestamp as an ISO-8601 string.
     """
+
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -90,14 +97,64 @@ class ConversationManager:
 
         This method is intentionally used internally by the
         manager for state mutation. Callers that only need
-        readable conversation state should use get_history()
-        or get_conversation(), which return defensive copies.
+        readable conversation state should use get_existing(),
+        get_history(), or get_conversation().
         """
 
         if conversation_id not in self.sessions:
             self.create(conversation_id)
 
         return self.sessions[conversation_id]
+
+    def get_existing(
+        self,
+        conversation_id: str,
+    ) -> dict[str, Any] | None:
+        """
+        Return an existing conversation without creating it.
+
+        This method is intended for read-only resource
+        lookups where a missing conversation should remain
+        missing.
+
+        A defensive copy is returned so callers cannot
+        mutate the manager's internal state.
+        """
+
+        session = self.sessions.get(
+            conversation_id
+        )
+
+        if session is None:
+            return None
+
+        return deepcopy(session)
+
+    def _require_existing(
+        self,
+        conversation_id: str,
+    ) -> dict[str, Any]:
+        """
+        Return an existing internal conversation session.
+
+        Unlike get_session(), this method never creates a
+        conversation. It raises ConversationNotFoundError
+        when the requested resource does not exist.
+
+        This is used by lifecycle operations such as rename,
+        archive, and unarchive.
+        """
+
+        session = self.sessions.get(
+            conversation_id
+        )
+
+        if session is None:
+            raise ConversationNotFoundError(
+                "Conversation not found."
+            )
+
+        return session
 
     def list_sessions(
         self,
@@ -153,7 +210,7 @@ class ConversationManager:
         title: str,
     ) -> dict[str, Any]:
         """
-        Rename a conversation.
+        Rename an existing conversation.
         """
 
         cleaned_title = title.strip()
@@ -168,7 +225,7 @@ class ConversationManager:
                 "Conversation title cannot exceed 200 characters."
             )
 
-        session = self.get_session(
+        session = self._require_existing(
             conversation_id
         )
 
@@ -182,10 +239,10 @@ class ConversationManager:
         conversation_id: str,
     ) -> dict[str, Any]:
         """
-        Archive a conversation.
+        Archive an existing conversation.
         """
 
-        session = self.get_session(
+        session = self._require_existing(
             conversation_id
         )
 
@@ -199,10 +256,10 @@ class ConversationManager:
         conversation_id: str,
     ) -> dict[str, Any]:
         """
-        Restore an archived conversation.
+        Restore an existing archived conversation.
         """
 
-        session = self.get_session(
+        session = self._require_existing(
             conversation_id
         )
 
@@ -292,6 +349,9 @@ class ConversationManager:
 
         The returned object can safely be modified by callers
         without mutating the manager's internal state.
+
+        Internal callers may rely on the existing get-or-create
+        behavior through get_session().
         """
 
         session = self.get_session(

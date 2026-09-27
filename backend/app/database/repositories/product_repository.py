@@ -1,4 +1,7 @@
 from app.database.connection import get_connection
+from app.database.repositories.base import (
+    execute_repository_operation,
+)
 
 
 def get_sales_by_category_data() -> list[dict]:
@@ -17,7 +20,10 @@ def get_sales_by_category_data() -> list[dict]:
             ORDER BY revenue DESC;
         """
 
-        results = connection.execute(query).fetchall()
+        results = execute_repository_operation(
+            "get_sales_by_category_data",
+            lambda: connection.execute(query).fetchall(),
+        )
 
         return [dict(row) for row in results]
 

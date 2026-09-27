@@ -21,13 +21,13 @@ logger = logging.getLogger(__name__)
 class AnalyticsAgent:
 
     def __init__(self):
-        if not settings.groq_api_key:
+        if not settings.groq_api_key.get_secret_value():
             raise ValueError(
                 "GROQ_API_KEY is not configured."
             )
 
         self.client = Groq(
-            api_key=settings.groq_api_key,
+            api_key=settings.groq_api_key.get_secret_value(),
             max_retries=0,
         )
 
@@ -46,6 +46,11 @@ class AnalyticsAgent:
         not have to understand provider-specific exceptions.
         """
 
+        logger.info(
+            "agent_llm_call_started | model=%s",
+            self.model,
+        )
+
         try:
             response = (
                 self.client.chat.completions.create(
@@ -59,7 +64,8 @@ class AnalyticsAgent:
 
         except Exception as error:
             logger.exception(
-                "agent_llm_call_failed"
+                "agent_llm_call_failed | model=%s",
+                self.model,
             )
 
             raise RuntimeError(
@@ -68,7 +74,8 @@ class AnalyticsAgent:
 
         if not response:
             logger.error(
-                "agent_llm_empty_response"
+                "agent_llm_empty_response | model=%s",
+                self.model,
             )
 
             raise RuntimeError(
@@ -83,7 +90,8 @@ class AnalyticsAgent:
 
         if not choices:
             logger.error(
-                "agent_llm_response_missing_choices"
+                "agent_llm_response_missing_choices | model=%s",
+                self.model,
             )
 
             raise RuntimeError(
@@ -98,7 +106,8 @@ class AnalyticsAgent:
 
         if assistant_message is None:
             logger.error(
-                "agent_llm_response_missing_message"
+                "agent_llm_response_missing_message | model=%s",
+                self.model,
             )
 
             raise RuntimeError(
@@ -150,6 +159,11 @@ class AnalyticsAgent:
         user_message: str,
         history: list | None = None,
     ):
+        logger.info(
+            "agent_started | model=%s",
+            self.model,
+        )
+
         messages = [
             {
                 "role": "system",
@@ -170,8 +184,9 @@ class AnalyticsAgent:
         tools_used = []
         tool_results = []
 
-        for _ in range(MAX_TOOL_ITERATIONS):
-
+        for iteration in range(
+            MAX_TOOL_ITERATIONS
+        ):
             assistant_message = self._call_llm(
                 messages
             )
@@ -183,6 +198,16 @@ class AnalyticsAgent:
             if not assistant_message.tool_calls:
                 answer = self._validate_final_answer(
                     assistant_message
+                )
+
+                logger.info(
+                    "agent_completed | "
+                    "model=%s | "
+                    "iterations=%s | "
+                    "tools_used=%s",
+                    self.model,
+                    iteration + 1,
+                    len(tools_used),
                 )
 
                 return {
@@ -197,6 +222,14 @@ class AnalyticsAgent:
             ):
                 tool_name = (
                     tool_call.function.name
+                )
+
+                logger.info(
+                    "agent_tool_execution_started | "
+                    "tool=%s | "
+                    "iteration=%s",
+                    tool_name,
+                    iteration + 1,
                 )
 
                 try:
@@ -228,7 +261,23 @@ class AnalyticsAgent:
                         }
                     )
 
+                    logger.info(
+                        "agent_tool_execution_completed | "
+                        "tool=%s | "
+                        "iteration=%s",
+                        tool_name,
+                        iteration + 1,
+                    )
+
                 except Exception as error:
+                    logger.exception(
+                        "agent_tool_execution_failed | "
+                        "tool=%s | "
+                        "iteration=%s",
+                        tool_name,
+                        iteration + 1,
+                    )
+
                     result = json.dumps(
                         {
                             "error": str(error)
@@ -254,6 +303,14 @@ class AnalyticsAgent:
                         "content": result,
                     }
                 )
+
+        logger.error(
+            "agent_max_tool_iterations_exceeded | "
+            "model=%s | "
+            "max_iterations=%s",
+            self.model,
+            MAX_TOOL_ITERATIONS,
+        )
 
         raise RuntimeError(
             "Agent exceeded maximum "

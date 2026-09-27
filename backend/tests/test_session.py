@@ -47,6 +47,91 @@ def test_get_session_creates_missing_conversation():
     ] == "New Chat"
 
 
+def test_get_existing_returns_none_for_missing_conversation():
+    manager = ConversationManager()
+
+    conversation = manager.get_existing(
+        "conversation-1"
+    )
+
+    assert conversation is None
+
+    assert manager.list_sessions(
+        include_archived=True
+    ) == []
+
+
+def test_get_existing_returns_existing_conversation():
+    manager = ConversationManager()
+
+    manager.create(
+        "conversation-1",
+        title="Revenue Analysis",
+    )
+
+    conversation = manager.get_existing(
+        "conversation-1"
+    )
+
+    assert conversation is not None
+
+    assert conversation[
+        "conversation_id"
+    ] == "conversation-1"
+
+    assert conversation[
+        "title"
+    ] == "Revenue Analysis"
+
+
+def test_get_existing_returns_defensive_copy():
+    manager = ConversationManager()
+
+    manager.create(
+        "conversation-1",
+        title="Revenue Analysis",
+    )
+
+    conversation = manager.get_existing(
+        "conversation-1"
+    )
+
+    conversation["title"] = "Modified externally"
+
+    stored_conversation = manager.get_existing(
+        "conversation-1"
+    )
+
+    assert stored_conversation[
+        "title"
+    ] == "Revenue Analysis"
+
+
+def test_get_existing_does_not_recreate_deleted_conversation():
+    manager = ConversationManager()
+
+    manager.create(
+        "conversation-1",
+        title="Revenue Analysis",
+    )
+
+    deleted = manager.delete(
+        "conversation-1"
+    )
+
+    assert deleted is True
+
+    conversation = manager.get_existing(
+        "conversation-1"
+    )
+
+    assert conversation is None
+
+    assert manager.list_sessions(
+        include_archived=True
+    ) == []
+
+
 def test_add_message_updates_history():
     manager = ConversationManager()
 
@@ -346,3 +431,44 @@ def test_get_conversation_returns_defensive_copy():
         ]
         == "Show revenue"
     )
+def test_rename_missing_conversation_raises_not_found():
+    manager = ConversationSessionManager()
+
+    try:
+        manager.rename(
+            "missing-id",
+            "New Name",
+        )
+        assert False
+    except ValueError as error:
+        assert str(error) == (
+            "Conversation not found."
+        )
+
+
+def test_archive_missing_conversation_raises_not_found():
+    manager = ConversationSessionManager()
+
+    try:
+        manager.archive(
+            "missing-id"
+        )
+        assert False
+    except ValueError as error:
+        assert str(error) == (
+            "Conversation not found."
+        )
+
+
+def test_unarchive_missing_conversation_raises_not_found():
+    manager = ConversationSessionManager()
+
+    try:
+        manager.unarchive(
+            "missing-id"
+        )
+        assert False
+    except ValueError as error:
+        assert str(error) == (
+            "Conversation not found."
+        )
