@@ -337,7 +337,7 @@ $RECYCLE.BIN/
 
 # ============================================================
 
-models/
+
 checkpoints/
 artifacts/
 mlruns/
