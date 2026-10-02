@@ -476,6 +476,104 @@ function AssistantAvatar() {
   );
 }
 
+function ClaimEvidence({
+  claim,
+  evidence,
+}: {
+  claim: import("../types/chat").InvestigationClaim;
+  evidence: import("../types/chat").InvestigationEvidence;
+}) {
+  return (
+    <details className="sources">
+      <summary>
+        Evidence · {claim.evidence_refs.length} reference
+        {claim.evidence_refs.length === 1 ? "" : "s"}
+      </summary>
+
+      <div className="source-list">
+        {claim.evidence_refs.map((reference, index) => {
+          const sourceEvidence =
+            evidence[reference.investigation];
+
+          return (
+            <details
+              className="source-item"
+              key={`${claim.id}-${reference.investigation}-${reference.field}-${index}`}
+            >
+              <summary>
+                {reference.investigation} · {reference.field}
+                {reference.entity !== null
+                  ? ` · ${reference.entity}`
+                  : ""}
+              </summary>
+
+              <pre
+                style={{
+                  whiteSpace: "pre-wrap",
+                  overflowX: "auto",
+                  marginTop: "8px",
+                }}
+              >
+                {JSON.stringify(
+                  sourceEvidence ??
+                    "Referenced evidence source is unavailable.",
+                  null,
+                  2
+                )}
+              </pre>
+            </details>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
+
+function ClaimTraceability({
+  claims,
+  evidence,
+}: {
+  claims: import("../types/chat").InvestigationClaim[];
+  evidence: import("../types/chat").InvestigationEvidence;
+}) {
+  if (!claims.length) {
+    return null;
+  }
+
+  return (
+    <details className="sources">
+      <summary>
+        Claims · {claims.length} evidence-backed finding
+        {claims.length === 1 ? "" : "s"}
+      </summary>
+
+      <div className="source-list">
+        {claims.map((claim) => (
+          <div
+            className="source-item"
+            key={claim.id}
+          >
+            <strong>{claim.statement}</strong>
+
+            <div style={{ marginTop: "6px" }}>
+              Status: {claim.status.replaceAll("_", " ")} · {claim.traceability_status}
+            </div>
+
+            {claim.evidence_refs.length > 0 && (
+              <ClaimEvidence
+                claim={claim}
+                evidence={evidence}
+              />
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+
 export default function Message({
   message,
 }: MessageProps) {
@@ -528,12 +626,24 @@ export default function Message({
         />
 
         {!isUser &&
+          message.claims &&
+          message.claims.length > 0 &&
+          message.investigationEvidence && (
+            <ClaimTraceability
+              claims={message.claims}
+              evidence={
+                message.investigationEvidence
+              }
+            />
+          )}
+
+        {!isUser &&
           message.toolsUsed &&
           message.toolsUsed.length >
             0 && (
             <details className="sources">
               <summary>
-                Sources ·{" "}
+                Sources · {" "}
                 {message.toolsUsed.length}
               </summary>
 

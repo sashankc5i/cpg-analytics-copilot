@@ -677,6 +677,28 @@ def investigate_stream(
                 yield (
                     json.dumps(
                         {
+                            "type": "claims",
+                            "data": claims,
+                        },
+                        default=str,
+                    )
+                    + "\n"
+                )
+
+                yield (
+                    json.dumps(
+                        {
+                            "type": "evidence",
+                            "data": evidence,
+                        },
+                        default=str,
+                    )
+                    + "\n"
+                )
+
+                yield (
+                    json.dumps(
+                        {
                             "type": "answer_start"
                         }
                     )
@@ -741,6 +763,8 @@ def investigate_stream(
                     {
                         "role": "assistant",
                         "content": answer,
+                        "claims": claims,
+                        "investigationEvidence": evidence,
                     },
                 )
 
@@ -935,18 +959,6 @@ def challenge_stream(
                     )
 
                 answer = "".join(answer_parts)
-
-                # Persist the completed Challenge response
-                # in the same conversation history used by
-                # Copilot and Investigation.
-                conversation_manager.add_message(
-                    request.conversation_id,
-                    {
-                        "role": "assistant",
-                        "content": answer,
-                        "messageType": "challenge",
-                    },
-                )
 
                 yield (
                     json.dumps(

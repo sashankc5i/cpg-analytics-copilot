@@ -32,11 +32,35 @@ export type ChatMessageType =
   | "challenge";
 
 
+export interface EvidenceReference {
+  investigation: string;
+  field: string;
+  entity: string | null;
+}
+
+
+export interface InvestigationClaim {
+  id: string;
+  statement: string;
+  status: string;
+  evidence_refs: EvidenceReference[];
+  traceability_status: string;
+}
+
+
+export type InvestigationEvidence = Record<
+  string,
+  unknown
+>;
+
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   toolsUsed?: string[];
   visualization?: Visualization | null;
+  claims?: InvestigationClaim[];
+  investigationEvidence?: InvestigationEvidence;
   messageType?: ChatMessageType;
 }
 

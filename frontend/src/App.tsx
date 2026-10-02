@@ -10,10 +10,6 @@ import {
   createConversation,
   getConversation,
   listConversations,
-  renameConversation,
-  archiveConversation,
-  unarchiveConversation,
-  deleteConversation,
   sendMessage,
   streamChallenge,
   streamInvestigation,
@@ -24,6 +20,8 @@ import {
 import type {
   ChatMessage,
   ConversationSummary,
+  InvestigationClaim,
+  InvestigationEvidence,
 } from "./types/chat";
 
 
@@ -175,26 +173,12 @@ function App() {
     setConversationLoading,
   ] = useState(true);
 
-
-  const [
-    showArchived,
-    setShowArchived,
-  ] = useState(false);
-
-
-  const [
-    openConversationMenuId,
-    setOpenConversationMenuId,
-  ] = useState<string | null>(null);
-
-
   /*
-   * React StrictMode intentionally runs effects twice
-   * during development. This guard prevents startup
-   * from creating duplicate conversations.
+   * React StrictMode intentionally runs effects twice in development.
+   * The initialization guard prevents that second effect pass from
+   * creating a duplicate "New Chat" conversation.
    */
-  const initializationStartedRef =
-    useRef(false);
+  const initializationStartedRef = useRef(false);
 
 
   /*
@@ -264,156 +248,6 @@ function App() {
 
   /*
    * ------------------------------------------------
-   * CONVERSATION TITLE HELPERS
-   * ------------------------------------------------
-   */
-
-  function buildConversationTitle(
-    message: string
-  ) {
-
-    const cleaned =
-      message
-        .replace(/\s+/g, " ")
-        .trim();
-
-    if (!cleaned) {
-      return "New Chat";
-    }
-
-    if (cleaned.length <= 52) {
-      return cleaned;
-    }
-
-    return `${cleaned.slice(0, 49).trim()}...`;
-  }
-
-
-  async function renameFromFirstMessage(
-    conversationId: string,
-    message: string
-  ) {
-
-    const title =
-      buildConversationTitle(message);
-
-    try {
-
-      await renameConversation(
-        conversationId,
-        { title }
-      );
-
-      setConversations(
-        (previous) =>
-          previous
-            .map((item) =>
-              item.conversation_id ===
-              conversationId
-                ? {
-                    ...item,
-                    title,
-                    updated_at:
-                      new Date().toISOString(),
-                  }
-                : item
-            )
-            .sort(
-              (a, b) =>
-                new Date(
-                  b.updated_at
-                ).getTime() -
-                new Date(
-                  a.updated_at
-                ).getTime()
-            )
-      );
-
-    } catch (err) {
-      console.error(
-        "Unable to rename conversation:",
-        err
-      );
-    }
-  }
-
-
-  async function normalizeConversationTitles(
-    summaries: ConversationSummary[]
-  ) {
-
-    const normalized =
-      await Promise.all(
-        summaries.map(async (summary) => {
-
-          if (
-            summary.title !==
-            "New Chat"
-          ) {
-            return summary;
-          }
-
-          try {
-
-            const conversation =
-              await getConversation(
-                summary.conversation_id
-              );
-
-            const firstUserMessage =
-              conversation.history.find(
-                (message) =>
-                  message.role ===
-                  "user" &&
-                  message.content.trim()
-                    .length > 0
-              );
-
-            if (!firstUserMessage) {
-              return summary;
-            }
-
-            const title =
-              buildConversationTitle(
-                firstUserMessage.content
-              );
-
-            await renameConversation(
-              summary.conversation_id,
-              { title }
-            );
-
-            return {
-              ...summary,
-              title,
-            };
-
-          } catch (err) {
-
-            console.error(
-              "Unable to normalize conversation title:",
-              err
-            );
-
-            return summary;
-          }
-        })
-      );
-
-    return normalized.sort(
-      (a, b) =>
-        new Date(
-          b.updated_at
-        ).getTime() -
-        new Date(
-          a.updated_at
-        ).getTime()
-    );
-  }
-
-
-  /*
-   * ------------------------------------------------
    * LOAD CONVERSATIONS ON STARTUP
    * ------------------------------------------------
    */
@@ -435,7 +269,7 @@ function App() {
 
 
         const existing =
-          await listConversations(false);
+          await listConversations();
 
 
         /*
@@ -445,15 +279,10 @@ function App() {
 
         if (existing.length > 0) {
 
-          const normalized =
-            await normalizeConversationTitles(
-              existing
-            );
-
-          setConversations(normalized);
-
           const latest =
-            normalized[0];
+            existing[0];
+
+          setConversations(existing);
 
           await loadConversation(
             latest.conversation_id
@@ -686,350 +515,6 @@ function App() {
 
   /*
    * ------------------------------------------------
-   * CONVERSATION ACTIONS
-   * ------------------------------------------------
-   */
-
-  async function handleRenameConversation(
-    conversationId: string,
-    currentTitle: string
-  ) {
-
-    const nextTitle = window.prompt(
-      "Rename conversation",
-      currentTitle === "New Chat"
-        ? ""
-        : currentTitle
-    );
-
-    if (nextTitle === null) {
-      return;
-    }
-
-    const title = nextTitle
-      .replace(/\s+/g, " ")
-      .trim();
-
-    if (!title) {
-      setError(
-        "Conversation title cannot be empty."
-      );
-      return;
-    }
-
-    if (title.length > 200) {
-      setError(
-        "Conversation title cannot exceed 200 characters."
-      );
-      return;
-    }
-
-    try {
-      setConversationLoading(true);
-      setError(null);
-
-      const renamed =
-        await renameConversation(
-          conversationId,
-          { title }
-        );
-
-      setConversations(
-        (previous) =>
-          previous
-            .map((item) =>
-              item.conversation_id ===
-              conversationId
-                ? {
-                    ...item,
-                    title: renamed.title,
-                    updated_at:
-                      renamed.updated_at,
-                  }
-                : item
-            )
-            .sort(
-              (a, b) =>
-                new Date(
-                  b.updated_at
-                ).getTime() -
-                new Date(
-                  a.updated_at
-                ).getTime()
-            )
-      );
-
-      setOpenConversationMenuId(null);
-
-    } catch (err) {
-      console.error(err);
-      setError(
-        "Unable to rename the conversation."
-      );
-    } finally {
-      setConversationLoading(false);
-    }
-  }
-
-
-  /*
-   * ------------------------------------------------
-   * ARCHIVE / RESTORE / DELETE
-   * ------------------------------------------------
-   */
-
-  async function activateFallbackConversation(
-    remaining: ConversationSummary[]
-  ) {
-
-    const next =
-      remaining.find(
-        (item) => !item.archived
-      );
-
-    if (next) {
-      await loadConversation(
-        next.conversation_id
-      );
-      return;
-    }
-
-    const created =
-      await createConversation({
-        title: "New Chat",
-      });
-
-    const summary: ConversationSummary = {
-      conversation_id:
-        created.conversation_id,
-      title: created.title,
-      created_at: created.created_at,
-      updated_at: created.updated_at,
-      archived: created.archived,
-    };
-
-    setConversations([summary]);
-    setActiveConversationId(
-      created.conversation_id
-    );
-    setMessages(
-      created.history || []
-    );
-    setInvestigationHasConclusion(false);
-    setMode("copilot");
-  }
-
-
-  async function handleArchiveConversation(
-    conversationId: string
-  ) {
-
-    if (loading) {
-      return;
-    }
-
-    try {
-      setConversationLoading(true);
-      setError(null);
-
-      await archiveConversation(
-        conversationId
-      );
-
-      const remaining =
-        conversations.filter(
-          (item) =>
-            item.conversation_id !==
-            conversationId
-        );
-
-      setConversations(remaining);
-      setOpenConversationMenuId(null);
-
-      if (
-        activeConversationId ===
-        conversationId
-      ) {
-        setActiveConversationId(null);
-        setMessages([]);
-        setInvestigationHasConclusion(
-          false
-        );
-        await activateFallbackConversation(
-          remaining
-        );
-      }
-
-    } catch (err) {
-      console.error(err);
-      setError(
-        "Unable to archive the conversation."
-      );
-    } finally {
-      setConversationLoading(false);
-    }
-  }
-
-
-  async function handleUnarchiveConversation(
-    conversationId: string
-  ) {
-
-    if (loading) {
-      return;
-    }
-
-    try {
-      setConversationLoading(true);
-      setError(null);
-
-      const restored =
-        await unarchiveConversation(
-          conversationId
-        );
-
-      if (showArchived) {
-        setConversations(
-          (previous) =>
-            previous.filter(
-              (item) =>
-                item.conversation_id !==
-                conversationId
-            )
-        );
-      } else {
-        setConversations(
-          (previous) =>
-            [
-              restored,
-              ...previous.filter(
-                (item) =>
-                  item.conversation_id !==
-                  conversationId
-              ),
-            ]
-        );
-      }
-
-      setOpenConversationMenuId(null);
-
-    } catch (err) {
-      console.error(err);
-      setError(
-        "Unable to restore the conversation."
-      );
-    } finally {
-      setConversationLoading(false);
-    }
-  }
-
-
-  async function handleDeleteConversation(
-    conversationId: string
-  ) {
-
-    if (loading) {
-      return;
-    }
-
-    const confirmed =
-      window.confirm(
-        "Delete this conversation permanently? This cannot be undone."
-      );
-
-    if (!confirmed) {
-      return;
-    }
-
-    try {
-      setConversationLoading(true);
-      setError(null);
-
-      await deleteConversation(
-        conversationId
-      );
-
-      const remaining =
-        conversations.filter(
-          (item) =>
-            item.conversation_id !==
-            conversationId
-        );
-
-      setConversations(remaining);
-      setOpenConversationMenuId(null);
-
-      if (
-        activeConversationId ===
-        conversationId
-      ) {
-        setActiveConversationId(null);
-        setMessages([]);
-        setInvestigationHasConclusion(
-          false
-        );
-        await activateFallbackConversation(
-          remaining
-        );
-      }
-
-    } catch (err) {
-      console.error(err);
-      setError(
-        "Unable to delete the conversation."
-      );
-    } finally {
-      setConversationLoading(false);
-    }
-  }
-
-
-  async function handleToggleArchived() {
-
-    if (loading) {
-      return;
-    }
-
-    try {
-      setConversationLoading(true);
-      setError(null);
-
-      const nextShowArchived =
-        !showArchived;
-
-      const updated =
-        await listConversations(
-          nextShowArchived
-        );
-
-      const normalized =
-        await normalizeConversationTitles(
-          updated.filter((item) =>
-            nextShowArchived
-              ? item.archived
-              : !item.archived
-          )
-        );
-
-      setConversations(normalized);
-      setShowArchived(
-        nextShowArchived
-      );
-      setOpenConversationMenuId(null);
-
-    } catch (err) {
-      console.error(err);
-      setError(
-        "Unable to load archived conversations."
-      );
-    } finally {
-      setConversationLoading(false);
-    }
-  }
-
-
-  /*
-   * ------------------------------------------------
    * UPDATE LOCAL CONVERSATION LIST
    * ------------------------------------------------
    *
@@ -1185,13 +670,6 @@ function App() {
         });
 
 
-        if (messages.length === 0) {
-          void renameFromFirstMessage(
-            activeConversationId,
-            message
-          );
-        }
-
         touchActiveConversation(
           activeConversationId
         );
@@ -1224,6 +702,12 @@ function App() {
     let assistantMessageCreated =
       false;
 
+    let investigationClaims: InvestigationClaim[] =
+      [];
+
+    let investigationEvidence: InvestigationEvidence =
+      {};
+
 
     try {
 
@@ -1238,13 +722,30 @@ function App() {
           event: InvestigationStreamEvent
         ) => {
 
+          if (event.type === "claims") {
+            investigationClaims =
+              Array.isArray(event.data)
+                ? event.data as InvestigationClaim[]
+                : [];
+          }
+
+          if (event.type === "evidence") {
+            investigationEvidence =
+              event.data &&
+              typeof event.data === "object"
+                ? event.data as InvestigationEvidence
+                : {};
+          }
+
           handleInvestigationEvent(
             event,
             assistantMessageCreated,
             () => {
               assistantMessageCreated =
                 true;
-            }
+            },
+            () => investigationClaims,
+            () => investigationEvidence
           );
         }
       );
@@ -1255,13 +756,6 @@ function App() {
        * conversation now has an investigation
        * conclusion that can be challenged.
        */
-
-      if (messages.length === 0) {
-        void renameFromFirstMessage(
-          activeConversationId,
-          message
-        );
-      }
 
       setInvestigationHasConclusion(
         true
@@ -1297,7 +791,9 @@ function App() {
   function handleInvestigationEvent(
     event: InvestigationStreamEvent,
     assistantMessageCreated: boolean,
-    markAssistantCreated: () => void
+    markAssistantCreated: () => void,
+    getClaims: () => InvestigationClaim[],
+    getEvidence: () => InvestigationEvidence
   ) {
 
     if (
@@ -1324,6 +820,20 @@ function App() {
 
 
     /*
+     * Claims and evidence are structured trust
+     * metadata. They are kept out of the streamed
+     * prose and attached to the final assistant
+     * message for user inspection.
+     */
+    if (
+      event.type === "claims" ||
+      event.type === "evidence"
+    ) {
+      return;
+    }
+
+
+    /*
      * Create an empty assistant message when
      * synthesis begins.
      */
@@ -1341,6 +851,8 @@ function App() {
           role: "assistant",
           content: "",
           messageType: "normal",
+          claims: getClaims(),
+          investigationEvidence: getEvidence(),
         });
 
 
@@ -1386,6 +898,8 @@ function App() {
           role: "assistant",
           content: token,
           messageType: "normal",
+          claims: getClaims(),
+          investigationEvidence: getEvidence(),
         });
 
 
@@ -1432,6 +946,8 @@ function App() {
               role: "assistant",
               content: token,
               messageType: "normal",
+              claims: getClaims(),
+              investigationEvidence: getEvidence(),
             });
 
 
@@ -1820,7 +1336,7 @@ function App() {
 
         <button
           type="button"
-          className="new-chat-button"
+          className="nav-item"
           onClick={
             handleNewConversation
           }
@@ -1829,183 +1345,52 @@ function App() {
             conversationLoading
           }
         >
+
           <SidebarIcon type="chat" />
-          <span>New Chat</span>
+
+          <span>
+            New Chat
+          </span>
+
         </button>
 
 
-        <div className="conversation-toolbar">
-          <span className="conversation-toolbar-label">
-            {showArchived
-              ? "ARCHIVED"
-              : "RECENT"}
-          </span>
-
-          <button
-            type="button"
-            className="conversation-filter"
-            onClick={handleToggleArchived}
-            disabled={
-              loading ||
-              conversationLoading
-            }
-          >
-            {showArchived
-              ? "Show recent"
-              : "Show archived"}
-          </button>
-        </div>
-
-
-        <div
-          className="conversation-list"
-          onClick={() =>
-            setOpenConversationMenuId(null)
-          }
-        >
-          {conversations.length === 0 && (
-            <div className="conversation-empty">
-              {showArchived
-                ? "No archived conversations"
-                : "No conversations yet"}
-            </div>
-          )}
+        <div className="conversation-list">
 
           {conversations.map(
             (conversation) => (
-              <div
+
+              <button
                 key={
                   conversation.conversation_id
                 }
+                type="button"
                 className={`conversation-item ${
                   activeConversationId ===
                   conversation.conversation_id
                     ? "active"
                     : ""
-                } ${
-                  openConversationMenuId ===
-                  conversation.conversation_id
-                    ? "menu-open"
-                    : ""
                 }`}
-                onClick={(event) =>
-                  event.stopPropagation()
+                onClick={() =>
+                  loadConversation(
+                    conversation.conversation_id
+                  )
+                }
+                disabled={
+                  loading ||
+                  conversationLoading
                 }
               >
-                <button
-                  type="button"
-                  className="conversation-select"
-                  onClick={() => {
-                    setOpenConversationMenuId(null);
-                    void loadConversation(
-                      conversation.conversation_id
-                    );
-                  }}
-                  disabled={
-                    loading ||
-                    conversationLoading
-                  }
-                >
-                  <span className="conversation-title">
-                    {conversation.title}
-                  </span>
 
-                  {conversation.archived && (
-                    <span className="conversation-archived-badge">
-                      Archived
-                    </span>
-                  )}
-                </button>
+                <span className="conversation-title">
+                  {conversation.title}
+                </span>
 
-                <button
-                  type="button"
-                  className="conversation-menu-trigger"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setOpenConversationMenuId(
-                      (current) =>
-                        current ===
-                        conversation.conversation_id
-                          ? null
-                          : conversation.conversation_id
-                    );
-                  }}
-                  disabled={
-                    loading ||
-                    conversationLoading
-                  }
-                  title="Conversation actions"
-                  aria-label={`Actions for ${conversation.title}`}
-                  aria-expanded={
-                    openConversationMenuId ===
-                    conversation.conversation_id
-                  }
-                >
-                  ⋮
-                </button>
+              </button>
 
-                {openConversationMenuId ===
-                  conversation.conversation_id && (
-                  <div
-                    className="conversation-menu"
-                    onClick={(event) =>
-                      event.stopPropagation()
-                    }
-                  >
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void handleRenameConversation(
-                          conversation.conversation_id,
-                          conversation.title
-                        )
-                      }
-                    >
-                      Rename
-                    </button>
-
-                    {conversation.archived ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void handleUnarchiveConversation(
-                            conversation.conversation_id
-                          )
-                        }
-                      >
-                        Restore
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void handleArchiveConversation(
-                            conversation.conversation_id
-                          )
-                        }
-                      >
-                        Archive
-                      </button>
-                    )}
-
-                    <div className="conversation-menu-divider" />
-
-                    <button
-                      type="button"
-                      className="conversation-menu-danger"
-                      onClick={() =>
-                        void handleDeleteConversation(
-                          conversation.conversation_id
-                        )
-                      }
-                    >
-                      Delete
-                    </button>
-                  </div>
-                )}
-              </div>
             )
           )}
+
         </div>
 
 

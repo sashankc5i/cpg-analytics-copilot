@@ -150,6 +150,8 @@ export interface InvestigationStreamEvent {
     | "investigation_started"
     | "plan"
     | "hypotheses"
+    | "claims"
+    | "evidence"
     | "answer_start"
     | "token"
     | "answer_end"
