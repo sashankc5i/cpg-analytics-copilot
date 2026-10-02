@@ -12,6 +12,7 @@ def _build_session() -> dict[str, Any]:
         "history": [],
         "latest_plan": [],
         "latest_evidence": {},
+        "latest_claims": [],
         "latest_answer": "",
     }
 
@@ -37,9 +38,7 @@ class InvestigationSessionManager:
     """
 
     def __init__(self):
-        self.sessions = defaultdict(
-            _build_session
-        )
+        self.sessions = defaultdict(_build_session)
 
     def get_session(
         self,
@@ -57,9 +56,7 @@ class InvestigationSessionManager:
         return defensive copies.
         """
 
-        return self.sessions[
-            investigation_id
-        ]
+        return self.sessions[investigation_id]
 
     def get_history(
         self,
@@ -74,9 +71,7 @@ class InvestigationSessionManager:
         """
 
         return deepcopy(
-            self.sessions[
-                investigation_id
-            ]["history"]
+            self.sessions[investigation_id]["history"]
         )
 
     def add_message(
@@ -92,9 +87,7 @@ class InvestigationSessionManager:
         modify the stored investigation state.
         """
 
-        self.sessions[
-            investigation_id
-        ]["history"].append(
+        self.sessions[investigation_id]["history"].append(
             deepcopy(message)
         )
 
@@ -104,26 +97,28 @@ class InvestigationSessionManager:
         *,
         plan: list[str],
         evidence: dict[str, Any],
+        claims: list[dict[str, Any]] | None = None,
         answer: str,
     ):
         """
         Store the latest investigation result.
+
+        Claims are optional for backward compatibility with
+        existing callers that predate claim traceability.
 
         Mutable inputs are copied before storage so the
         investigation manager owns its internal analytical
         state independently from caller-owned objects.
         """
 
-        session = self.sessions[
-            investigation_id
-        ]
+        session = self.sessions[investigation_id]
 
-        session["latest_plan"] = deepcopy(
-            plan
-        )
+        session["latest_plan"] = deepcopy(plan)
 
-        session["latest_evidence"] = deepcopy(
-            evidence
+        session["latest_evidence"] = deepcopy(evidence)
+
+        session["latest_claims"] = deepcopy(
+            claims or []
         )
 
         session["latest_answer"] = answer
@@ -137,7 +132,7 @@ class InvestigationSessionManager:
         state without exposing internal mutable state.
 
         A deep defensive copy is returned because evidence
-        can contain nested dictionaries and lists.
+        and claims can contain nested dictionaries and lists.
         """
 
         session = self.get_session(
@@ -150,6 +145,9 @@ class InvestigationSessionManager:
             ),
             "evidence": deepcopy(
                 session["latest_evidence"]
+            ),
+            "claims": deepcopy(
+                session["latest_claims"]
             ),
             "answer": session["latest_answer"],
         }
@@ -183,9 +181,7 @@ class InvestigationSessionManager:
         if investigation_id not in self.sessions:
             return False
 
-        del self.sessions[
-            investigation_id
-        ]
+        del self.sessions[investigation_id]
 
         return True
 
@@ -198,11 +194,7 @@ class InvestigationSessionManager:
         preserving the investigation ID.
         """
 
-        self.sessions[
-            investigation_id
-        ] = _build_session()
+        self.sessions[investigation_id] = _build_session()
 
 
-investigation_session_manager = (
-    InvestigationSessionManager()
-)
+investigation_session_manager = InvestigationSessionManager()

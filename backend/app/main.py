@@ -638,6 +638,7 @@ def investigate_stream(
         plan = investigation["plan"]
         hypotheses = investigation["hypotheses"]
         evidence = investigation["evidence"]
+        claims = investigation.get("claims", [])
 
         def generate():
             answer_parts = []
@@ -687,6 +688,7 @@ def investigate_stream(
                     evidence,
                     hypotheses,
                     history,
+                    claims,
                 ):
                     answer_parts.append(chunk)
 
@@ -722,6 +724,7 @@ def investigate_stream(
                     request.conversation_id,
                     plan=plan,
                     evidence=evidence,
+                    claims=claims,
                     answer=answer,
                 )
 
@@ -755,11 +758,13 @@ def investigate_stream(
                     "request_id=%s | "
                     "conversation_id=%s | "
                     "plan=%s | "
-                    "hypotheses=%s",
+                    "hypotheses=%s | "
+                    "claims=%s",
                     request_id,
                     request.conversation_id,
                     plan,
                     len(hypotheses),
+                    len(claims),
                 )
 
             except Exception as error:

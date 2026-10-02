@@ -50,11 +50,12 @@ def test_investigation_is_stored_in_conversation_history(
         }
 
     def fake_stream_synthesis(
-        question,
-        evidence,
-        hypotheses,
-        history,
-    ):
+    question,
+    evidence,
+    hypotheses,
+    history,
+    claims=None,
+):
         yield "Revenue declined "
         yield "primarily in the South region."
 
@@ -127,6 +128,7 @@ def test_investigation_memory_stores_analytical_context(
         evidence,
         hypotheses,
         history,
+        claims=None,
     ):
         yield "Revenue declined."
 
@@ -208,6 +210,7 @@ def test_chat_and_investigation_share_conversation_id(
         evidence,
         hypotheses,
         history,
+        claims=None,
     ):
         yield "The investigation found stable revenue."
 

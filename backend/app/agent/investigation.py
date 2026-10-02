@@ -4,9 +4,11 @@ from typing import Any, TypedDict
 from groq import Groq
 from langgraph.graph import END, START, StateGraph
 
+from app.agent.claims import validate_claims
 from app.agent.investigation_session import (
     investigation_session_manager,
 )
+from app.agent.retry import execute_with_retry
 from app.agent.tools import execute_tool
 from app.config import get_settings
 
@@ -46,6 +48,10 @@ VALID_HYPOTHESIS_STATUSES = {
 }
 
 MAX_HYPOTHESES = 5
+MAX_CLAIMS = 10
+
+# Keep structured claim generation bounded.
+CLAIM_MAX_TOKENS = 4096
 
 
 # ============================================================
@@ -58,6 +64,7 @@ class InvestigationState(TypedDict):
     hypotheses: list[dict[str, Any]]
     plan: list[str]
     evidence: dict[str, Any]
+    claims: list[dict[str, Any]]
     answer: str
 
 
@@ -118,7 +125,10 @@ Rules:
 6. A diagnostic question may require multiple investigations.
 7. Return JSON only.
 
-Return exactly:
+Return exactly this JSON object.
+Generate only the claims needed to represent the strongest
+observable findings; do not enumerate every data point.
+
 
 {{
     "investigations": [
@@ -133,6 +143,9 @@ def validate_plan(
 ) -> list[str]:
 
     validated = []
+
+    if not isinstance(plan, list):
+        return validated
 
     for item in plan:
         if item in INVESTIGATION_CATALOG:
@@ -160,24 +173,32 @@ def planner(
             f"Using {len(history)} previous messages"
         )
 
-    response = client.chat.completions.create(
-        model=settings.groq_model,
-        messages=[
-            {
-                "role": "system",
-                "content": get_planner_prompt(
-                    question,
-                    history,
-                ),
-            }
-        ],
-        temperature=0,
-        response_format={
-            "type": "json_object"
-        },
+    response = execute_with_retry(
+        lambda: client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": get_planner_prompt(
+                        question,
+                        history,
+                    ),
+                }
+            ],
+            temperature=0,
+            response_format={
+                "type": "json_object"
+            },
+        ),
+        operation_name="investigation_planner",
     )
 
     content = response.choices[0].message.content
+
+    if not content:
+        raise ValueError(
+            "Investigation planner returned an empty response."
+        )
 
     parsed = json.loads(content)
 
@@ -286,24 +307,32 @@ def generate_hypotheses(
         f"Generating hypotheses for: {question}"
     )
 
-    response = client.chat.completions.create(
-        model=settings.groq_model,
-        messages=[
-            {
-                "role": "system",
-                "content": get_hypothesis_prompt(
-                    question,
-                    history,
-                ),
-            }
-        ],
-        temperature=0,
-        response_format={
-            "type": "json_object"
-        },
+    response = execute_with_retry(
+        lambda: client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": get_hypothesis_prompt(
+                        question,
+                        history,
+                    ),
+                }
+            ],
+            temperature=0,
+            response_format={
+                "type": "json_object"
+            },
+        ),
+        operation_name="investigation_hypothesis_generation",
     )
 
     content = response.choices[0].message.content
+
+    if not content:
+        raise ValueError(
+            "Hypothesis generator returned an empty response."
+        )
 
     parsed = json.loads(content)
 
@@ -447,7 +476,7 @@ def evidence_collector(
     # collected.
     #
     # This is important because the hypothesis generator is
-    # now independent from the planner.
+    # independent from the planner.
     # --------------------------------------------------------
 
     for hypothesis in hypotheses:
@@ -523,23 +552,280 @@ def evidence_collector(
 
 
 # ============================================================
+# Claim Generator
+# ============================================================
+
+def build_claim_hypothesis_context(
+    hypotheses: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Build a compact representation of hypotheses for claim
+    generation.
+
+    Hypotheses contain attached evidence after the evidence
+    collector runs. Sending that evidence again to the claim
+    generator duplicates a potentially large amount of data.
+
+    The claim generator already receives the complete
+    deterministic evidence separately, so only the hypothesis
+    metadata is required here.
+    """
+
+    compact_hypotheses = []
+
+    for hypothesis in hypotheses:
+
+        compact_hypotheses.append(
+            {
+                "id": hypothesis.get("id"),
+                "statement": hypothesis.get("statement"),
+                "required_investigations": hypothesis.get(
+                    "required_investigations",
+                    [],
+                ),
+                "status": hypothesis.get(
+                    "status",
+                    "unverified",
+                ),
+            }
+        )
+
+    return compact_hypotheses
+
+
+def get_claim_prompt(
+    question: str,
+    evidence: dict[str, Any],
+    hypotheses: list[dict[str, Any]],
+) -> str:
+
+    compact_hypotheses = build_claim_hypothesis_context(
+        hypotheses
+    )
+
+    return f"""
+You are the claim generation layer of an enterprise
+CPG analytics investigation system.
+
+Your job is to identify concise, evidence-backed BUSINESS
+OBSERVATIONS from deterministic analytical evidence.
+
+You are NOT writing the final answer.
+
+CURRENT QUESTION:
+
+{question}
+
+HYPOTHESIS CONTEXT:
+
+{json.dumps(compact_hypotheses, indent=2, default=str)}
+
+DETERMINISTIC ANALYTICAL EVIDENCE:
+
+{json.dumps(evidence, indent=2, default=str)}
+
+Generate concise candidate claims that can be directly traced
+to the supplied deterministic evidence.
+
+Rules:
+
+1. Use ONLY the supplied deterministic evidence.
+2. Never invent metrics, values, entities, periods, or facts.
+3. Do not infer causality.
+4. Do not turn a hypothesis into a fact.
+5. Claims must describe observable analytical findings.
+6. Prefer the most decision-relevant observations instead of
+   exhaustively listing every increase or decrease.
+7. Generate only the minimum number of useful claims needed to
+   represent the strongest observed findings.
+8. Every claim MUST contain at least one evidence reference.
+9. Every evidence reference MUST use an investigation name
+   that exists in the supplied evidence.
+10. The "field" must be an actual field present in the
+    referenced evidence.
+11. If referencing a specific entity, use the exact value
+    appearing in the evidence.
+12. If no specific entity is applicable, use null.
+13. Do not include a status field.
+14. Do not claim that an observation is causally responsible
+    for another observation.
+15. Generate at most {MAX_CLAIMS} claims.
+16. Keep each claim statement concise.
+17. Return JSON only.
+18. Do not return markdown.
+19. Do not return explanatory text outside the JSON object.
+
+Return exactly:
+
+{{
+    "claims": [
+        {{
+            "id": "C1",
+            "statement": "An observable evidence-backed finding.",
+            "evidence_refs": [
+                {{
+                    "investigation": "regional_performance",
+                    "field": "revenue",
+                    "entity": "South"
+                }}
+            ]
+        }}
+    ]
+}}
+"""
+
+
+def generate_claims(
+    state: InvestigationState,
+) -> dict:
+
+    question = state["question"]
+    evidence = state["evidence"]
+    hypotheses = state["hypotheses"]
+
+    print(
+        "[Claim Generator] "
+        f"Generating claims from "
+        f"{len(evidence)} evidence sources"
+    )
+
+    if not evidence:
+        print(
+            "[Claim Generator] "
+            "No deterministic evidence available"
+        )
+
+        return {
+            "claims": []
+        }
+
+    response = execute_with_retry(
+        lambda: client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": get_claim_prompt(
+                        question,
+                        evidence,
+                        hypotheses,
+                    ),
+                }
+            ],
+            temperature=0,
+            max_tokens=CLAIM_MAX_TOKENS,
+            response_format={
+                "type": "json_object"
+            },
+        ),
+        operation_name="investigation_claim_generation",
+    )
+
+    content = response.choices[0].message.content
+
+    if not content:
+        print(
+            "[Claim Generator] "
+            "LLM returned an empty response"
+        )
+
+        return {
+            "claims": []
+        }
+
+    parsed = json.loads(content)
+
+    candidate_claims = parsed.get(
+        "claims",
+        [],
+    )
+
+    claims = validate_claims(
+        candidate_claims,
+        evidence,
+    )
+
+    if len(claims) > MAX_CLAIMS:
+        claims = claims[:MAX_CLAIMS]
+
+    print(
+        "[Claim Generator] "
+        f"Validated {len(claims)} "
+        "traceable claims"
+    )
+
+    for claim in claims:
+        print(
+            "[Claim Generator] "
+            f"{claim['id']} | "
+            f"{claim['traceability_status']} | "
+            f"{claim['statement']}"
+        )
+
+    return {
+        "claims": claims,
+    }
+
+
+# ============================================================
 # Synthesis
 # ============================================================
+
+def build_synthesis_context(
+    question: str,
+    evidence: dict[str, Any],
+    hypotheses: list[dict[str, Any]],
+    history: list[dict[str, str]],
+    claims: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """
+    Build a purpose-specific context for the synthesis LLM.
+
+    Hypotheses may contain evidence attached by the evidence collector.
+    The complete deterministic evidence is already supplied separately,
+    so that attached evidence is intentionally removed here to avoid
+    duplicating the same data in the synthesis prompt.
+
+    The synthesizer receives:
+    - the current question
+    - compact hypothesis metadata
+    - complete deterministic evidence
+    - validated traceable claims
+    - prior investigation conversation
+    """
+
+    return {
+        "question": question,
+        "history": history,
+        "hypotheses": build_claim_hypothesis_context(hypotheses),
+        "evidence": evidence,
+        "claims": claims or [],
+    }
+
 
 def get_synthesis_prompt(
     question: str,
     evidence: dict[str, Any],
     hypotheses: list[dict[str, Any]],
     history: list[dict[str, str]],
+    claims: list[dict[str, Any]] | None = None,
 ) -> str:
+
+    context = build_synthesis_context(
+        question=question,
+        evidence=evidence,
+        hypotheses=hypotheses,
+        history=history,
+        claims=claims,
+    )
 
     history_text = ""
 
-    if history:
+    if context["history"]:
         history_text = "\n".join(
             f"{message['role'].upper()}: "
             f"{message['content']}"
-            for message in history
+            for message in context["history"]
         )
 
     return f"""
@@ -548,7 +834,7 @@ CPG analytics investigation system.
 
 USER QUESTION:
 
-{question}
+{context["question"]}
 
 PREVIOUS INVESTIGATION CONVERSATION:
 
@@ -556,11 +842,15 @@ PREVIOUS INVESTIGATION CONVERSATION:
 
 HYPOTHESIS TREE:
 
-{json.dumps(hypotheses, indent=2, default=str)}
+{json.dumps(context["hypotheses"], indent=2, default=str)}
 
 DETERMINISTIC ANALYTICAL EVIDENCE:
 
-{json.dumps(evidence, indent=2, default=str)}
+{json.dumps(context["evidence"], indent=2, default=str)}
+
+TRACEABLE CANDIDATE CLAIMS:
+
+{json.dumps(context["claims"], indent=2, default=str)}
 
 Rules:
 
@@ -573,10 +863,13 @@ Rules:
 6. Distinguish observed facts from possible explanations.
 7. Do not claim causality unless the evidence supports it.
 8. Evaluate hypotheses using the evidence attached to them.
-9. Previous answers are context, not factual evidence.
-10. The current question has priority.
-11. If evidence is insufficient, explicitly say so.
-12. Do not force a conclusion.
+9. Use traceable candidate claims as evidence-backed
+   observations, but do not treat their traceability alone
+   as proof of causality.
+10. Previous answers are context, not factual evidence.
+11. The current question has priority.
+12. If evidence is insufficient, explicitly say so.
+13. Do not force a conclusion.
 
 Structure the answer as:
 
@@ -613,29 +906,39 @@ def synthesizer(
     evidence = state["evidence"]
     hypotheses = state["hypotheses"]
     history = state["history"]
+    claims = state["claims"]
 
     print(
         "[Investigation Synthesizer] "
         "Generating final answer"
     )
 
-    response = client.chat.completions.create(
-        model=settings.groq_model,
-        messages=[
-            {
-                "role": "system",
-                "content": get_synthesis_prompt(
-                    question,
-                    evidence,
-                    hypotheses,
-                    history,
-                ),
-            }
-        ],
-        temperature=0,
+    response = execute_with_retry(
+        lambda: client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": get_synthesis_prompt(
+                        question,
+                        evidence,
+                        hypotheses,
+                        history,
+                        claims,
+                    ),
+                }
+            ],
+            temperature=0,
+        ),
+        operation_name="investigation_synthesis",
     )
 
     answer = response.choices[0].message.content
+
+    if not answer:
+        raise ValueError(
+            "Investigation synthesizer returned an empty response."
+        )
 
     return {
         "answer": answer,
@@ -651,23 +954,35 @@ def stream_synthesis(
     evidence: dict[str, Any],
     hypotheses: list[dict[str, Any]],
     history: list[dict[str, str]],
+    claims: list[dict[str, Any]] | None = None,
 ):
+    """
+    Stream the final investigation synthesis.
 
-    response = client.chat.completions.create(
-        model=settings.groq_model,
-        messages=[
-            {
-                "role": "system",
-                "content": get_synthesis_prompt(
-                    question,
-                    evidence,
-                    hypotheses,
-                    history,
-                ),
-            }
-        ],
-        temperature=0,
-        stream=True,
+    The retry wrapper protects the initial provider request.
+    Once the stream has started, already-emitted tokens are not
+    replayed because replaying them could duplicate output.
+    """
+
+    response = execute_with_retry(
+        lambda: client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": get_synthesis_prompt(
+                        question,
+                        evidence,
+                        hypotheses,
+                        history,
+                        claims,
+                    ),
+                }
+            ],
+            temperature=0,
+            stream=True,
+        ),
+        operation_name="investigation_stream_synthesis",
     )
 
     for chunk in response:
@@ -707,6 +1022,11 @@ def build_investigation_graph():
     )
 
     graph.add_node(
+        "claim_generator",
+        generate_claims,
+    )
+
+    graph.add_node(
         "synthesizer",
         synthesizer,
     )
@@ -728,6 +1048,11 @@ def build_investigation_graph():
 
     graph.add_edge(
         "evidence_collector",
+        "claim_generator",
+    )
+
+    graph.add_edge(
+        "claim_generator",
         "synthesizer",
     )
 
@@ -769,6 +1094,11 @@ def build_investigation_preparation_graph():
         evidence_collector,
     )
 
+    graph.add_node(
+        "claim_generator",
+        generate_claims,
+    )
+
     graph.add_edge(
         START,
         "planner",
@@ -786,6 +1116,11 @@ def build_investigation_preparation_graph():
 
     graph.add_edge(
         "evidence_collector",
+        "claim_generator",
+    )
+
+    graph.add_edge(
+        "claim_generator",
         END,
     )
 
@@ -819,6 +1154,7 @@ def prepare_investigation(
                 "hypotheses": [],
                 "plan": [],
                 "evidence": {},
+                "claims": [],
                 "answer": "",
             }
         )
@@ -830,4 +1166,5 @@ def prepare_investigation(
         "hypotheses": result["hypotheses"],
         "plan": result["plan"],
         "evidence": result["evidence"],
+        "claims": result["claims"],
     }
