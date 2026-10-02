@@ -54,6 +54,27 @@ export type InvestigationEvidence = Record<
 >;
 
 
+export interface InvestigationConfidence {
+  score: number;
+  level: "high" | "moderate" | "low" | string;
+  basis: string;
+  signals: {
+    investigation_coverage: number;
+    hypothesis_evidence_coverage: number;
+    claim_traceability: number;
+    evidence_breadth: number;
+  };
+  counts: {
+    planned_investigations: number;
+    evidence_sources: number;
+    hypotheses: number;
+    claims: number;
+    traceable_claims: number;
+  };
+  limitations: string[];
+}
+
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -61,6 +82,7 @@ export interface ChatMessage {
   visualization?: Visualization | null;
   claims?: InvestigationClaim[];
   investigationEvidence?: InvestigationEvidence;
+  confidence?: InvestigationConfidence;
   messageType?: ChatMessageType;
 }
 

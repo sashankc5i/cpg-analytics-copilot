@@ -574,6 +574,86 @@ function ClaimTraceability({
 }
 
 
+function ConfidenceAssessment({
+  confidence,
+}: {
+  confidence: import("../types/chat").InvestigationConfidence;
+}) {
+  const counts = confidence?.counts ?? {
+    planned_investigations: 0,
+    evidence_sources: 0,
+    hypotheses: 0,
+    claims: 0,
+    traceable_claims: 0,
+  };
+
+  const signals = confidence?.signals ?? {
+    investigation_coverage: 0,
+    hypothesis_evidence_coverage: 0,
+    claim_traceability: 0,
+    evidence_breadth: 0,
+  };
+
+  const limitations = confidence?.limitations ?? [];
+
+  return (
+    <details className="sources">
+      <summary>
+        Evidence confidence · {confidence?.score ?? 0}/100 ·{" "}
+        {confidence?.level ?? "low"}
+      </summary>
+
+      <div className="source-list">
+        <div className="source-item">
+          <strong>Evidence coverage</strong>
+
+          <div style={{ marginTop: "6px" }}>
+            Planned investigations: {counts.planned_investigations}
+            <br />
+            Evidence sources: {counts.evidence_sources}
+            <br />
+            Traceable claims: {counts.traceable_claims} / {counts.claims}
+          </div>
+        </div>
+
+        <div className="source-item">
+          <strong>Confidence signals</strong>
+
+          <div style={{ marginTop: "6px" }}>
+            Investigation coverage: {signals.investigation_coverage}%
+            <br />
+            Hypothesis evidence coverage:{" "}
+            {signals.hypothesis_evidence_coverage}%
+            <br />
+            Claim traceability: {signals.claim_traceability}%
+            <br />
+            Evidence breadth: {signals.evidence_breadth}%
+          </div>
+        </div>
+
+        {limitations.length > 0 && (
+          <div className="source-item">
+            <strong>Limitations</strong>
+
+            <ul>
+              {limitations.map((limitation) => (
+                <li key={limitation}>{limitation}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div className="source-item">
+          <small>
+            This score measures evidence coverage and traceability. It is not
+            a probability that the conclusion is true.
+          </small>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 export default function Message({
   message,
 }: MessageProps) {
@@ -624,6 +704,13 @@ export default function Message({
         <MarkdownContent
           content={message.content}
         />
+
+        {!isUser &&
+          message.confidence && (
+            <ConfidenceAssessment
+              confidence={message.confidence}
+            />
+          )}
 
         {!isUser &&
           message.claims &&

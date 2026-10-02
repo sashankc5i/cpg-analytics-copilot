@@ -22,6 +22,7 @@ import type {
   ConversationSummary,
   InvestigationClaim,
   InvestigationEvidence,
+  InvestigationConfidence,
 } from "./types/chat";
 
 
@@ -708,6 +709,8 @@ function App() {
     let investigationEvidence: InvestigationEvidence =
       {};
 
+    let investigationConfidence: InvestigationConfidence | undefined;
+
 
     try {
 
@@ -729,6 +732,14 @@ function App() {
                 : [];
           }
 
+          if (event.type === "confidence") {
+            investigationConfidence =
+              event.data &&
+              typeof event.data === "object"
+                ? event.data as InvestigationConfidence
+                : undefined;
+          }
+
           if (event.type === "evidence") {
             investigationEvidence =
               event.data &&
@@ -745,7 +756,8 @@ function App() {
                 true;
             },
             () => investigationClaims,
-            () => investigationEvidence
+            () => investigationEvidence,
+            () => investigationConfidence
           );
         }
       );
@@ -793,7 +805,8 @@ function App() {
     assistantMessageCreated: boolean,
     markAssistantCreated: () => void,
     getClaims: () => InvestigationClaim[],
-    getEvidence: () => InvestigationEvidence
+    getEvidence: () => InvestigationEvidence,
+    getConfidence: () => InvestigationConfidence | undefined
   ) {
 
     if (
@@ -827,7 +840,8 @@ function App() {
      */
     if (
       event.type === "claims" ||
-      event.type === "evidence"
+      event.type === "evidence" ||
+      event.type === "confidence"
     ) {
       return;
     }
@@ -853,6 +867,7 @@ function App() {
           messageType: "normal",
           claims: getClaims(),
           investigationEvidence: getEvidence(),
+          confidence: getConfidence(),
         });
 
 
@@ -900,6 +915,7 @@ function App() {
           messageType: "normal",
           claims: getClaims(),
           investigationEvidence: getEvidence(),
+          confidence: getConfidence(),
         });
 
 

@@ -5,6 +5,7 @@ from groq import Groq
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.claims import validate_claims
+from app.agent.confidence import calculate_confidence
 from app.agent.investigation_session import (
     investigation_session_manager,
 )
@@ -65,6 +66,7 @@ class InvestigationState(TypedDict):
     plan: list[str]
     evidence: dict[str, Any]
     claims: list[dict[str, Any]]
+    confidence: dict[str, Any]
     answer: str
 
 
@@ -768,6 +770,31 @@ def generate_claims(
 
 
 # ============================================================
+# Confidence Assessment
+# ============================================================
+
+def assess_confidence(
+    state: InvestigationState,
+) -> dict:
+    confidence = calculate_confidence(
+        plan=state["plan"],
+        evidence=state["evidence"],
+        hypotheses=state["hypotheses"],
+        claims=state["claims"],
+    )
+
+    print(
+        "[Confidence Assessment] "
+        f"score={confidence["score"]} | "
+        f"level={confidence["level"]}"
+    )
+
+    return {
+        "confidence": confidence,
+    }
+
+
+# ============================================================
 # Synthesis
 # ============================================================
 
@@ -777,6 +804,7 @@ def build_synthesis_context(
     hypotheses: list[dict[str, Any]],
     history: list[dict[str, str]],
     claims: list[dict[str, Any]] | None = None,
+    confidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Build a purpose-specific context for the synthesis LLM.
@@ -800,6 +828,7 @@ def build_synthesis_context(
         "hypotheses": build_claim_hypothesis_context(hypotheses),
         "evidence": evidence,
         "claims": claims or [],
+        "confidence": confidence or {},
     }
 
 
@@ -809,6 +838,7 @@ def get_synthesis_prompt(
     hypotheses: list[dict[str, Any]],
     history: list[dict[str, str]],
     claims: list[dict[str, Any]] | None = None,
+    confidence: dict[str, Any] | None = None,
 ) -> str:
 
     context = build_synthesis_context(
@@ -817,6 +847,7 @@ def get_synthesis_prompt(
         hypotheses=hypotheses,
         history=history,
         claims=claims,
+        confidence=confidence,
     )
 
     history_text = ""
@@ -852,6 +883,10 @@ TRACEABLE CANDIDATE CLAIMS:
 
 {json.dumps(context["claims"], indent=2, default=str)}
 
+EVIDENCE-BASED CONFIDENCE:
+
+{json.dumps(context["confidence"], indent=2, default=str)}
+
 Rules:
 
 1. SQLite analytics are the source of truth.
@@ -870,6 +905,8 @@ Rules:
 11. The current question has priority.
 12. If evidence is insufficient, explicitly say so.
 13. Do not force a conclusion.
+14. Treat the confidence assessment as evidence coverage, not a probability of truth.
+15. Explain important confidence limitations when they materially affect the conclusion.
 
 Structure the answer as:
 
@@ -907,6 +944,7 @@ def synthesizer(
     hypotheses = state["hypotheses"]
     history = state["history"]
     claims = state["claims"]
+    confidence = state["confidence"]
 
     print(
         "[Investigation Synthesizer] "
@@ -925,6 +963,7 @@ def synthesizer(
                         hypotheses,
                         history,
                         claims,
+                        confidence,
                     ),
                 }
             ],
@@ -955,6 +994,7 @@ def stream_synthesis(
     hypotheses: list[dict[str, Any]],
     history: list[dict[str, str]],
     claims: list[dict[str, Any]] | None = None,
+    confidence: dict[str, Any] | None = None,
 ):
     """
     Stream the final investigation synthesis.
@@ -976,6 +1016,7 @@ def stream_synthesis(
                         hypotheses,
                         history,
                         claims,
+                        confidence,
                     ),
                 }
             ],
@@ -1027,6 +1068,11 @@ def build_investigation_graph():
     )
 
     graph.add_node(
+        "confidence_assessor",
+        assess_confidence,
+    )
+
+    graph.add_node(
         "synthesizer",
         synthesizer,
     )
@@ -1053,6 +1099,11 @@ def build_investigation_graph():
 
     graph.add_edge(
         "claim_generator",
+        "confidence_assessor",
+    )
+
+    graph.add_edge(
+        "confidence_assessor",
         "synthesizer",
     )
 
@@ -1099,6 +1150,11 @@ def build_investigation_preparation_graph():
         generate_claims,
     )
 
+    graph.add_node(
+        "confidence_assessor",
+        assess_confidence,
+    )
+
     graph.add_edge(
         START,
         "planner",
@@ -1121,6 +1177,11 @@ def build_investigation_preparation_graph():
 
     graph.add_edge(
         "claim_generator",
+        "confidence_assessor",
+    )
+
+    graph.add_edge(
+        "confidence_assessor",
         END,
     )
 
@@ -1155,6 +1216,7 @@ def prepare_investigation(
                 "plan": [],
                 "evidence": {},
                 "claims": [],
+                "confidence": {},
                 "answer": "",
             }
         )

@@ -152,6 +152,7 @@ export interface InvestigationStreamEvent {
     | "hypotheses"
     | "claims"
     | "evidence"
+    | "confidence"
     | "answer_start"
     | "token"
     | "answer_end"

@@ -639,6 +639,7 @@ def investigate_stream(
         hypotheses = investigation["hypotheses"]
         evidence = investigation["evidence"]
         claims = investigation.get("claims", [])
+        confidence = investigation.get("confidence", {})
 
         def generate():
             answer_parts = []
@@ -699,6 +700,17 @@ def investigate_stream(
                 yield (
                     json.dumps(
                         {
+                            "type": "confidence",
+                            "data": confidence,
+                        },
+                        default=str,
+                    )
+                    + "\n"
+                )
+
+                yield (
+                    json.dumps(
+                        {
                             "type": "answer_start"
                         }
                     )
@@ -711,6 +723,7 @@ def investigate_stream(
                     hypotheses,
                     history,
                     claims,
+                    confidence,
                 ):
                     answer_parts.append(chunk)
 
@@ -747,6 +760,7 @@ def investigate_stream(
                     plan=plan,
                     evidence=evidence,
                     claims=claims,
+                    confidence=confidence,
                     answer=answer,
                 )
 
@@ -765,6 +779,7 @@ def investigate_stream(
                         "content": answer,
                         "claims": claims,
                         "investigationEvidence": evidence,
+                        "confidence": confidence,
                     },
                 )
 
@@ -783,12 +798,13 @@ def investigate_stream(
                     "conversation_id=%s | "
                     "plan=%s | "
                     "hypotheses=%s | "
-                    "claims=%s",
+                    "claims=%s | confidence=%s",
                     request_id,
                     request.conversation_id,
                     plan,
                     len(hypotheses),
                     len(claims),
+                    confidence.get("level"),
                 )
 
             except Exception as error:
