@@ -1,7 +1,10 @@
 import json
 import logging
+import re
+import time
 
 from groq import Groq
+from groq import RateLimitError
 
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.tools import (
@@ -15,7 +18,60 @@ settings = get_settings()
 
 MAX_TOOL_ITERATIONS = settings.max_tool_iterations
 
+# Keep the generated response bounded so a single request does not consume
+# most of the organization's TPM window.
+MAX_COMPLETION_TOKENS = 1200
+
+# A 429 can be temporary. Retry a small, bounded number of times instead of
+# immediately converting the provider response into a 500.
+MAX_RATE_LIMIT_RETRIES = 3
+DEFAULT_RETRY_DELAY_SECONDS = 5.0
+MAX_RETRY_DELAY_SECONDS = 30.0
+
 logger = logging.getLogger(__name__)
+
+
+def _retry_delay_from_error(error: RateLimitError) -> float:
+    """
+    Extract Groq's suggested retry delay when it is present.
+
+    Groq commonly includes a message such as:
+    "Please try again in 17.67s."
+    """
+
+    message = str(error)
+
+    match = re.search(
+        r"try again in\s+([0-9]+(?:\.[0-9]+)?)s",
+        message,
+        flags=re.IGNORECASE,
+    )
+
+    if match:
+        try:
+            return min(
+                float(match.group(1)),
+                MAX_RETRY_DELAY_SECONDS,
+            )
+        except ValueError:
+            pass
+
+    # Some provider responses expose Retry-After as a header.
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+
+    if headers:
+        retry_after = headers.get("retry-after")
+        if retry_after:
+            try:
+                return min(
+                    float(retry_after),
+                    MAX_RETRY_DELAY_SECONDS,
+                )
+            except (TypeError, ValueError):
+                pass
+
+    return DEFAULT_RETRY_DELAY_SECONDS
 
 
 class AnalyticsAgent:
@@ -40,37 +96,75 @@ class AnalyticsAgent:
         """
         Call the LLM and validate the provider response.
 
-        The agent treats the LLM as an external dependency.
-        Provider failures and malformed responses are converted
-        into controlled RuntimeError exceptions so callers do
-        not have to understand provider-specific exceptions.
+        Provider rate limits are handled separately from other provider
+        failures. A bounded retry is used for HTTP 429 responses, while
+        other failures are converted into controlled RuntimeError
+        exceptions.
+
+        The completion token limit is intentionally bounded to reduce
+        unnecessary TPM consumption.
         """
 
         logger.info(
-            "agent_llm_call_started | model=%s",
+            "agent_llm_call_started | model=%s | messages=%s",
             self.model,
+            len(messages),
         )
 
-        try:
-            response = (
-                self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=TOOL_DEFINITIONS,
-                    tool_choice="auto",
-                    temperature=0,
+        for attempt in range(
+            MAX_RATE_LIMIT_RETRIES + 1
+        ):
+            try:
+                response = (
+                    self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        tools=TOOL_DEFINITIONS,
+                        tool_choice="auto",
+                        temperature=0,
+                        max_completion_tokens=MAX_COMPLETION_TOKENS,
+                    )
                 )
-            )
 
-        except Exception as error:
-            logger.exception(
-                "agent_llm_call_failed | model=%s",
-                self.model,
-            )
+                break
 
-            raise RuntimeError(
-                "The analytics model could not be reached."
-            ) from error
+            except RateLimitError as error:
+                if attempt >= MAX_RATE_LIMIT_RETRIES:
+                    logger.exception(
+                        "agent_llm_rate_limit_exhausted | "
+                        "model=%s | attempts=%s",
+                        self.model,
+                        attempt + 1,
+                    )
+
+                    raise RuntimeError(
+                        "The analytics model is temporarily rate-limited. "
+                        "Please try again shortly."
+                    ) from error
+
+                delay = _retry_delay_from_error(error)
+
+                logger.warning(
+                    "agent_llm_rate_limited | "
+                    "model=%s | attempt=%s/%s | "
+                    "retry_in=%.2fs",
+                    self.model,
+                    attempt + 1,
+                    MAX_RATE_LIMIT_RETRIES + 1,
+                    delay,
+                )
+
+                time.sleep(delay)
+
+            except Exception as error:
+                logger.exception(
+                    "agent_llm_call_failed | model=%s",
+                    self.model,
+                )
+
+                raise RuntimeError(
+                    "The analytics model could not be reached."
+                ) from error
 
         if not response:
             logger.error(

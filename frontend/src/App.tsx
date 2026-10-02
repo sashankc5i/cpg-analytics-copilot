@@ -10,6 +10,7 @@ import {
   createConversation,
   getConversation,
   listConversations,
+  renameConversation,
   sendMessage,
   streamChallenge,
   streamInvestigation,
@@ -23,6 +24,7 @@ import type {
   InvestigationClaim,
   InvestigationEvidence,
   InvestigationConfidence,
+  EvidenceGraph,
 } from "./types/chat";
 
 
@@ -167,6 +169,17 @@ function App() {
     conversations,
     setConversations,
   ] = useState<ConversationSummary[]>([]);
+
+
+  const [
+    renamingConversationId,
+    setRenamingConversationId,
+  ] = useState<string | null>(null);
+
+  const [
+    renameDraft,
+    setRenameDraft,
+  ] = useState("");
 
 
   const [
@@ -569,6 +582,122 @@ function App() {
 
   /*
    * ------------------------------------------------
+   * REFRESH ACTIVE CONVERSATION SUMMARY
+   * ------------------------------------------------
+   *
+   * The backend may update the conversation title
+   * automatically after the first user message.
+   * Fetch the persisted conversation so the sidebar
+   * reflects that title immediately without requiring
+   * a browser refresh.
+   */
+
+  async function refreshConversationSummary(
+    conversationId: string
+  ) {
+    try {
+      const conversation =
+        await getConversation(conversationId);
+
+      const summary: ConversationSummary = {
+        conversation_id:
+          conversation.conversation_id,
+        title:
+          conversation.title,
+        created_at:
+          conversation.created_at,
+        updated_at:
+          conversation.updated_at,
+        archived:
+          conversation.archived,
+      };
+
+      setConversations(
+        (previous) => [
+          summary,
+          ...previous.filter(
+            (item) =>
+              item.conversation_id !==
+              conversationId
+          ),
+        ]
+      );
+    } catch (error) {
+      // The chat itself has already succeeded. A sidebar
+      // refresh failure must never make the user-facing
+      // chat request look unsuccessful.
+      console.warn(
+        "Unable to refresh conversation summary.",
+        error
+      );
+
+      touchActiveConversation(
+        conversationId
+      );
+    }
+  }
+
+
+  /*
+   * ------------------------------------------------
+   * RENAME CONVERSATION
+   * ------------------------------------------------
+   */
+
+  function startRenamingConversation(
+    conversation: ConversationSummary
+  ) {
+    if (loading || conversationLoading) {
+      return;
+    }
+
+    setRenamingConversationId(conversation.conversation_id);
+    setRenameDraft(conversation.title);
+  }
+
+
+  function cancelRenamingConversation() {
+    setRenamingConversationId(null);
+    setRenameDraft("");
+  }
+
+
+  async function saveConversationRename(
+    conversationId: string
+  ) {
+    const title = renameDraft.trim();
+
+    if (!title) {
+      setError("Conversation name cannot be empty.");
+      return;
+    }
+
+    try {
+      setError(null);
+
+      const updated = await renameConversation(
+        conversationId,
+        { title }
+      );
+
+      setConversations((previous) =>
+        previous.map((conversation) =>
+          conversation.conversation_id === conversationId
+            ? { ...conversation, ...updated }
+            : conversation
+        )
+      );
+
+      cancelRenamingConversation();
+    } catch (err) {
+      console.error(err);
+      setError("Unable to rename the conversation.");
+    }
+  }
+
+
+  /*
+   * ------------------------------------------------
    * MESSAGE HELPERS
    * ------------------------------------------------
    */
@@ -671,7 +800,7 @@ function App() {
         });
 
 
-        touchActiveConversation(
+        await refreshConversationSummary(
           activeConversationId
         );
 
@@ -711,6 +840,8 @@ function App() {
 
     let investigationConfidence: InvestigationConfidence | undefined;
 
+    let investigationEvidenceGraph: EvidenceGraph | undefined;
+
 
     try {
 
@@ -748,6 +879,14 @@ function App() {
                 : {};
           }
 
+          if (event.type === "evidence_graph") {
+            investigationEvidenceGraph =
+              event.data &&
+              typeof event.data === "object"
+                ? event.data as EvidenceGraph
+                : undefined;
+          }
+
           handleInvestigationEvent(
             event,
             assistantMessageCreated,
@@ -757,7 +896,8 @@ function App() {
             },
             () => investigationClaims,
             () => investigationEvidence,
-            () => investigationConfidence
+            () => investigationConfidence,
+            () => investigationEvidenceGraph
           );
         }
       );
@@ -774,7 +914,7 @@ function App() {
       );
 
 
-      touchActiveConversation(
+      await refreshConversationSummary(
         activeConversationId
       );
 
@@ -806,7 +946,8 @@ function App() {
     markAssistantCreated: () => void,
     getClaims: () => InvestigationClaim[],
     getEvidence: () => InvestigationEvidence,
-    getConfidence: () => InvestigationConfidence | undefined
+    getConfidence: () => InvestigationConfidence | undefined,
+    getEvidenceGraph: () => EvidenceGraph | undefined
   ) {
 
     if (
@@ -841,7 +982,8 @@ function App() {
     if (
       event.type === "claims" ||
       event.type === "evidence" ||
-      event.type === "confidence"
+      event.type === "confidence" ||
+      event.type === "evidence_graph"
     ) {
       return;
     }
@@ -868,6 +1010,7 @@ function App() {
           claims: getClaims(),
           investigationEvidence: getEvidence(),
           confidence: getConfidence(),
+          evidenceGraph: getEvidenceGraph(),
         });
 
 
@@ -916,6 +1059,7 @@ function App() {
           claims: getClaims(),
           investigationEvidence: getEvidence(),
           confidence: getConfidence(),
+          evidenceGraph: getEvidenceGraph(),
         });
 
 
@@ -964,6 +1108,8 @@ function App() {
               messageType: "normal",
               claims: getClaims(),
               investigationEvidence: getEvidence(),
+              confidence: getConfidence(),
+              evidenceGraph: getEvidenceGraph(),
             });
 
 
@@ -1374,37 +1520,131 @@ function App() {
         <div className="conversation-list">
 
           {conversations.map(
-            (conversation) => (
+            (conversation) => {
+              const isRenaming =
+                renamingConversationId ===
+                conversation.conversation_id;
 
-              <button
-                key={
-                  conversation.conversation_id
-                }
-                type="button"
-                className={`conversation-item ${
-                  activeConversationId ===
-                  conversation.conversation_id
-                    ? "active"
-                    : ""
-                }`}
-                onClick={() =>
-                  loadConversation(
+              return (
+                <div
+                  key={conversation.conversation_id}
+                  className={`conversation-item ${
+                    activeConversationId ===
                     conversation.conversation_id
-                  )
-                }
-                disabled={
-                  loading ||
-                  conversationLoading
-                }
-              >
+                      ? "active"
+                      : ""
+                  }`}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                >
+                  {isRenaming ? (
+                    <input
+                      autoFocus
+                      value={renameDraft}
+                      onChange={(event) =>
+                        setRenameDraft(event.target.value)
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          void saveConversationRename(
+                            conversation.conversation_id
+                          );
+                        }
+                        if (event.key === "Escape") {
+                          cancelRenamingConversation();
+                        }
+                      }}
+                      onBlur={() => {
+                        void saveConversationRename(
+                          conversation.conversation_id
+                        );
+                      }}
+                      disabled={loading || conversationLoading}
+                      aria-label="Conversation name"
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                      }}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        loadConversation(
+                          conversation.conversation_id
+                        )
+                      }
+                      disabled={
+                        loading ||
+                        conversationLoading
+                      }
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        textAlign: "left",
+                        background: "transparent",
+                        border: 0,
+                        padding: 0,
+                        color: "inherit",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <span className="conversation-title">
+                        {conversation.title}
+                      </span>
+                    </button>
+                  )}
 
-                <span className="conversation-title">
-                  {conversation.title}
-                </span>
+                  {!isRenaming && (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        startRenamingConversation(conversation);
+                      }}
+                      disabled={loading || conversationLoading}
+                      aria-label={`Rename ${conversation.title}`}
+                      title="Rename conversation"
+                      style={{
+                        border: 0,
+                        background: "transparent",
+                        color: "inherit",
+                        opacity: 0.65,
+                        cursor: "pointer",
+                        padding: "2px 4px",
+                      }}
+                    >
+                      ✎
+                    </button>
+                  )}
 
-              </button>
-
-            )
+                  {isRenaming && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void saveConversationRename(
+                          conversation.conversation_id
+                        )
+                      }
+                      aria-label="Save conversation name"
+                      title="Save"
+                      style={{
+                        border: 0,
+                        background: "transparent",
+                        color: "inherit",
+                        cursor: "pointer",
+                        padding: "2px 4px",
+                      }}
+                    >
+                      ✓
+                    </button>
+                  )}
+                </div>
+              );
+            }
           )}
 
         </div>

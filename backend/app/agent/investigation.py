@@ -6,6 +6,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agent.claims import validate_claims
 from app.agent.confidence import calculate_confidence
+from app.agent.evidence_graph import build_evidence_graph
 from app.agent.investigation_session import (
     investigation_session_manager,
 )
@@ -67,6 +68,7 @@ class InvestigationState(TypedDict):
     evidence: dict[str, Any]
     claims: list[dict[str, Any]]
     confidence: dict[str, Any]
+    evidence_graph: dict[str, Any]
     answer: str
 
 
@@ -769,13 +771,9 @@ def generate_claims(
     }
 
 
-# ============================================================
-# Confidence Assessment
-# ============================================================
-
 def assess_confidence(
     state: InvestigationState,
-) -> dict:
+) -> dict[str, Any]:
     confidence = calculate_confidence(
         plan=state["plan"],
         evidence=state["evidence"],
@@ -784,13 +782,32 @@ def assess_confidence(
     )
 
     print(
-        "[Confidence Assessment] "
-        f"score={confidence["score"]} | "
-        f"level={confidence["level"]}"
+        "[Confidence Assessor] "
+        f"score={confidence['score']} | "
+        f"level={confidence['level']}"
     )
 
     return {
         "confidence": confidence,
+    }
+
+
+def build_graph(
+    state: InvestigationState,
+) -> dict[str, Any]:
+    graph = build_evidence_graph(
+        claims=state["claims"],
+        evidence=state["evidence"],
+    )
+
+    print(
+        "[Evidence Graph] "
+        f"nodes={len(graph['nodes'])} | "
+        f"edges={len(graph['edges'])}"
+    )
+
+    return {
+        "evidence_graph": graph,
     }
 
 
@@ -1073,6 +1090,11 @@ def build_investigation_graph():
     )
 
     graph.add_node(
+        "evidence_graph",
+        build_graph,
+    )
+
+    graph.add_node(
         "synthesizer",
         synthesizer,
     )
@@ -1104,6 +1126,11 @@ def build_investigation_graph():
 
     graph.add_edge(
         "confidence_assessor",
+        "evidence_graph",
+    )
+
+    graph.add_edge(
+        "evidence_graph",
         "synthesizer",
     )
 
@@ -1155,6 +1182,11 @@ def build_investigation_preparation_graph():
         assess_confidence,
     )
 
+    graph.add_node(
+        "evidence_graph",
+        build_graph,
+    )
+
     graph.add_edge(
         START,
         "planner",
@@ -1182,6 +1214,11 @@ def build_investigation_preparation_graph():
 
     graph.add_edge(
         "confidence_assessor",
+        "evidence_graph",
+    )
+
+    graph.add_edge(
+        "evidence_graph",
         END,
     )
 
@@ -1217,6 +1254,7 @@ def prepare_investigation(
                 "evidence": {},
                 "claims": [],
                 "confidence": {},
+                "evidence_graph": {},
                 "answer": "",
             }
         )
@@ -1229,4 +1267,6 @@ def prepare_investigation(
         "plan": result["plan"],
         "evidence": result["evidence"],
         "claims": result["claims"],
+        "confidence": result["confidence"],
+        "evidence_graph": result["evidence_graph"],
     }

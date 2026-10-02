@@ -15,6 +15,7 @@ from app.agent.investigation import (
     prepare_investigation,
     stream_synthesis,
 )
+from app.agent.evidence_graph import build_evidence_graph
 from app.agent.investigation_session import (
     investigation_session_manager,
 )
@@ -32,6 +33,200 @@ from app.logging_config import (
 )
 from app.middleware import request_logging_middleware
 from app.models.chat import ChatResponse
+
+
+# ---------------------------------------------------------------------------
+# Evidence Graph
+# ---------------------------------------------------------------------------
+
+def _build_investigation_evidence_graph(
+    *,
+    claims: list[dict],
+    evidence: dict,
+    hypotheses: list[dict],
+    plan: list[str],
+) -> dict:
+    """
+    Build the investigation evidence graph.
+
+    The core graph builder owns claim -> evidence traceability.
+    This orchestration layer enriches that graph with the
+    investigation hypotheses and planner-selected metric/
+    investigation targets so the frontend can later render
+    the complete analytical chain.
+    """
+
+    graph = build_evidence_graph(
+        claims=claims,
+        evidence=evidence,
+    )
+
+    nodes = list(graph.get("nodes", []))
+    edges = list(graph.get("edges", []))
+
+    existing_node_ids = {
+        str(node.get("id"))
+        for node in nodes
+        if isinstance(node, dict)
+    }
+
+    existing_edges = {
+        (
+            str(edge.get("source")),
+            str(edge.get("target")),
+            str(edge.get("type")),
+        )
+        for edge in edges
+        if isinstance(edge, dict)
+    }
+
+    def add_node(
+        node_id: str,
+        node_type: str,
+        label: str,
+        data=None,
+    ):
+        if node_id in existing_node_ids:
+            return
+
+        node = {
+            "id": node_id,
+            "type": node_type,
+            "label": label,
+        }
+
+        if data is not None:
+            node["data"] = data
+
+        nodes.append(node)
+        existing_node_ids.add(node_id)
+
+    def add_edge(
+        source: str,
+        target: str,
+        edge_type: str,
+    ):
+        key = (
+            str(source),
+            str(target),
+            str(edge_type),
+        )
+
+        if key in existing_edges:
+            return
+
+        edges.append(
+            {
+                "source": source,
+                "target": target,
+                "type": edge_type,
+            }
+        )
+
+        existing_edges.add(key)
+
+    # ---------------------------------------------------------------
+    # Planner-selected investigations / metrics
+    # ---------------------------------------------------------------
+
+    for investigation_name in plan:
+        investigation_id = str(investigation_name)
+
+        add_node(
+            node_id=investigation_id,
+            node_type="metric",
+            label=investigation_id,
+            data={
+                "investigation": investigation_id,
+            },
+        )
+
+    # ---------------------------------------------------------------
+    # Hypotheses and their relationships to investigations/evidence
+    # ---------------------------------------------------------------
+
+    for index, hypothesis in enumerate(hypotheses):
+        if not isinstance(hypothesis, dict):
+            continue
+
+        hypothesis_id = str(
+            hypothesis.get(
+                "id",
+                f"hypothesis_{index + 1}",
+            )
+        )
+
+        statement = str(
+            hypothesis.get(
+                "statement",
+                hypothesis_id,
+            )
+        )
+
+        add_node(
+            node_id=hypothesis_id,
+            node_type="hypothesis",
+            label=statement,
+            data=hypothesis,
+        )
+
+        investigations = hypothesis.get(
+            "required_investigations",
+            hypothesis.get(
+                "evidence_targets",
+                [],
+            ),
+        )
+
+        if not isinstance(investigations, list):
+            investigations = [investigations]
+
+        for investigation_name in investigations:
+            if investigation_name is None:
+                continue
+
+            investigation_id = str(
+                investigation_name
+            )
+
+            # A hypothesis can reference an investigation
+            # even if it was not selected by the planner.
+            if investigation_id not in existing_node_ids:
+                add_node(
+                    node_id=investigation_id,
+                    node_type="metric",
+                    label=investigation_id,
+                    data={
+                        "investigation": investigation_id,
+                    },
+                )
+
+            add_edge(
+                hypothesis_id,
+                investigation_id,
+                "tested_by",
+            )
+
+        hypothesis_evidence = hypothesis.get(
+            "evidence",
+            {},
+        )
+
+        if isinstance(hypothesis_evidence, dict):
+            for evidence_id in hypothesis_evidence:
+                evidence_id = str(evidence_id)
+
+                if evidence_id in existing_node_ids:
+                    add_edge(
+                        hypothesis_id,
+                        evidence_id,
+                        "supported_by",
+                    )
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +380,129 @@ class ConversationRenameRequest(BaseModel):
             value,
             "title",
         )
+
+
+# ---------------------------------------------------------------------------
+# Automatic Conversation Naming
+# ---------------------------------------------------------------------------
+
+_TITLE_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "could",
+    "did", "do", "does", "for", "from", "has", "have", "how", "i",
+    "in", "is", "it", "me", "my", "of", "on", "or", "please", "should",
+    "show", "tell", "that", "the", "this", "to", "was", "what", "when",
+    "where", "which", "who", "why", "with", "would", "you", "your",
+}
+
+_TITLE_FILLER_WORDS = {
+    "give", "get", "need", "want", "help", "explain", "look", "find",
+    "analyze", "analysis", "question", "chat",
+}
+
+
+def _generate_conversation_title(message: str) -> str:
+    """
+    Create a short deterministic title from the user's first message.
+
+    This intentionally has no external dependency or LLM call. Conversation
+    naming is a convenience feature and must never become a dependency of
+    the analytics response path.
+    """
+    import re
+
+    cleaned = re.sub(r"[^A-Za-z0-9%._/-]+", " ", message).strip()
+    words = cleaned.split()
+
+    if not words:
+        return "New Chat"
+
+    selected: list[str] = []
+
+    for word in words:
+        normalized = word.strip("._/-").lower()
+
+        if not normalized:
+            continue
+
+        if normalized in _TITLE_STOP_WORDS:
+            continue
+
+        if normalized in _TITLE_FILLER_WORDS and len(words) > 3:
+            continue
+
+        selected.append(word.strip("._/-"))
+
+        if len(selected) == 7:
+            break
+
+    if not selected:
+        selected = words[:7]
+
+    title_words = []
+    for word in selected:
+        if "%" in word or any(char.isdigit() for char in word):
+            title_words.append(word)
+        else:
+            title_words.append(word[:1].upper() + word[1:])
+
+    title = " ".join(title_words).strip()
+
+    if len(title) < 2:
+        return "New Chat"
+
+    return title[:200]
+
+
+def _auto_name_conversation(
+    conversation_id: str,
+    message: str,
+) -> None:
+    """
+    Automatically name a conversation only while it still has the default
+    'New Chat' title.
+
+    Any failure is intentionally swallowed so title generation can never
+    break Copilot or Investigation execution.
+    """
+    try:
+        conversation = conversation_manager.get_existing(
+            conversation_id
+        )
+
+        if not conversation:
+            return
+
+        current_title = str(
+            conversation.get("title", "")
+        ).strip()
+
+        if current_title.lower() != "new chat":
+            return
+
+        title = _generate_conversation_title(message)
+
+        if title.lower() == "new chat":
+            return
+
+        conversation_manager.rename(
+            conversation_id,
+            title,
+        )
+
+        logger.info(
+            "conversation_auto_named | "
+            "conversation_id=%s | title=%s",
+            conversation_id,
+            title,
+        )
+
+    except Exception:
+        logger.exception(
+            "conversation_auto_name_failed | "
+            "conversation_id=%s",
+            conversation_id,
+        )
+
 
 
 # ---------------------------------------------------------------------------
@@ -342,34 +660,6 @@ def rename_conversation(
             status_code=400,
             detail=str(error),
         )
-@app.patch("/api/conversations/{conversation_id}")
-def rename_conversation(
-    conversation_id: str,
-    request: ConversationRenameRequest,
-):
-    """
-    Rename an existing conversation.
-    """
-
-    try:
-        session = conversation_manager.rename(
-            conversation_id,
-            request.title,
-        )
-
-        return {
-            "conversation_id": session["conversation_id"],
-            "title": session["title"],
-            "created_at": session["created_at"],
-            "updated_at": session["updated_at"],
-            "archived": session["archived"],
-        }
-
-    except ValueError as error:
-        raise HTTPException(
-            status_code=400,
-            detail=str(error),
-        )
 
 
 @app.post(
@@ -492,6 +782,11 @@ def chat(
         http_request.state,
         "request_id",
         "unknown",
+    )
+
+    _auto_name_conversation(
+        request.conversation_id,
+        request.message,
     )
 
     logger.info(
@@ -620,6 +915,11 @@ def investigate_stream(
         "unknown",
     )
 
+    _auto_name_conversation(
+        request.conversation_id,
+        request.message,
+    )
+
     logger.info(
         "investigation_request | "
         "request_id=%s | conversation_id=%s",
@@ -640,6 +940,15 @@ def investigate_stream(
         evidence = investigation["evidence"]
         claims = investigation.get("claims", [])
         confidence = investigation.get("confidence", {})
+
+        evidence_graph = (
+            _build_investigation_evidence_graph(
+                claims=claims,
+                evidence=evidence,
+                hypotheses=hypotheses,
+                plan=plan,
+            )
+        )
 
         def generate():
             answer_parts = []
@@ -702,6 +1011,17 @@ def investigate_stream(
                         {
                             "type": "confidence",
                             "data": confidence,
+                        },
+                        default=str,
+                    )
+                    + "\n"
+                )
+
+                yield (
+                    json.dumps(
+                        {
+                            "type": "evidence_graph",
+                            "data": evidence_graph,
                         },
                         default=str,
                     )
@@ -780,6 +1100,7 @@ def investigate_stream(
                         "claims": claims,
                         "investigationEvidence": evidence,
                         "confidence": confidence,
+                        "evidenceGraph": evidence_graph,
                     },
                 )
 

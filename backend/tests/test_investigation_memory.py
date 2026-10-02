@@ -50,12 +50,13 @@ def test_investigation_is_stored_in_conversation_history(
         }
 
     def fake_stream_synthesis(
-    question,
-    evidence,
-    hypotheses,
-    history,
-    claims=None,
-):
+        question,
+        evidence,
+        hypotheses,
+        history,
+        claims=None,
+        confidence=None,
+    ):
         yield "Revenue declined "
         yield "primarily in the South region."
 
@@ -96,6 +97,60 @@ def test_investigation_is_stored_in_conversation_history(
                 "Revenue declined "
                 "primarily in the South region."
             ),
+            "claims": [],
+            "investigationEvidence": {
+                "revenue_trend": {
+                    "direction": "down",
+                    "change_pct": -8.2,
+                }
+            },
+            "confidence": {},
+            "evidenceGraph": {
+                "nodes": [
+                    {
+                        "id": "revenue_trend",
+                        "type": "evidence",
+                        "label": "revenue_trend",
+                        "data": {
+                            "direction": "down",
+                            "change_pct": -8.2,
+                        },
+                    },
+                    {
+                        "id": "regional_performance",
+                        "type": "metric",
+                        "label": "regional_performance",
+                        "data": {
+                            "investigation": "regional_performance",
+                        },
+                    },
+                    {
+                        "id": "H1",
+                        "type": "hypothesis",
+                        "label": (
+                            "Revenue may be changing "
+                            "because of regional performance."
+                        ),
+                        "data": {
+                            "id": "H1",
+                            "statement": (
+                                "Revenue may be changing "
+                                "because of regional performance."
+                            ),
+                            "evidence_targets": [
+                                "regional_performance"
+                            ],
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "source": "H1",
+                        "target": "regional_performance",
+                        "type": "tested_by",
+                    },
+                ],
+            },
         },
     ]
 
@@ -129,6 +184,7 @@ def test_investigation_memory_stores_analytical_context(
         hypotheses,
         history,
         claims=None,
+        confidence=None,
     ):
         yield "Revenue declined."
 
@@ -200,7 +256,7 @@ def test_chat_and_investigation_share_conversation_id(
             "hypotheses": [],
             "evidence": {
                 "revenue_trend": {
-                    "direction": "stable"
+                    "direction": "stable",
                 }
             },
         }
@@ -211,6 +267,7 @@ def test_chat_and_investigation_share_conversation_id(
         hypotheses,
         history,
         claims=None,
+        confidence=None,
     ):
         yield "The investigation found stable revenue."
 
@@ -279,6 +336,26 @@ def test_chat_and_investigation_share_conversation_id(
         "content": (
             "The investigation found stable revenue."
         ),
+        "claims": [],
+        "investigationEvidence": {
+            "revenue_trend": {
+                "direction": "stable",
+            }
+        },
+        "confidence": {},
+        "evidenceGraph": {
+            "nodes": [
+                {
+                    "id": "revenue_trend",
+                    "type": "evidence",
+                    "label": "revenue_trend",
+                    "data": {
+                        "direction": "stable",
+                    },
+                },
+            ],
+            "edges": [],
+        },
     }
 
     investigation = (

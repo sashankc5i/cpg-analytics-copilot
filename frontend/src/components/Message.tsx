@@ -3,7 +3,11 @@ import {
   type ReactElement,
 } from "react";
 
-import type { ChatMessage } from "../types/chat";
+import type {
+  ChatMessage,
+  EvidenceGraph,
+  EvidenceGraphNode,
+} from "../types/chat";
 
 import ChartRenderer from "./ChartRenderer";
 
@@ -574,6 +578,108 @@ function ClaimTraceability({
 }
 
 
+function EvidenceGraphView({
+  graph,
+}: {
+  graph: EvidenceGraph;
+}) {
+  if (!graph.nodes.length) {
+    return null;
+  }
+
+  const nodesById = new Map(
+    graph.nodes.map((node) => [node.id, node])
+  );
+
+  function nodeTypeLabel(node: EvidenceGraphNode) {
+    return node.type.replaceAll("_", " ");
+  }
+
+  return (
+    <details className="sources evidence-graph">
+      <summary>
+        Evidence graph · {graph.nodes.length} nodes ·{" "}
+        {graph.edges.length} connections
+      </summary>
+
+      <div className="source-list">
+        <div className="source-item">
+          <strong>Investigation chain</strong>
+
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "10px",
+              marginTop: "10px",
+            }}
+          >
+            {graph.nodes.map((node) => (
+              <div
+                key={node.id}
+                style={{
+                  border: "1px solid rgba(128, 128, 128, 0.25)",
+                  borderRadius: "8px",
+                  padding: "10px 12px",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: "11px",
+                    textTransform: "uppercase",
+                    opacity: 0.65,
+                    marginBottom: "3px",
+                  }}
+                >
+                  {nodeTypeLabel(node)}
+                </div>
+
+                <strong>{node.label || node.id}</strong>
+
+                <div
+                  style={{
+                    fontSize: "11px",
+                    opacity: 0.55,
+                    marginTop: "3px",
+                  }}
+                >
+                  {node.id}
+                </div>
+
+                {graph.edges
+                  .filter((edge) => edge.source === node.id)
+                  .map((edge) => {
+                    const target =
+                      nodesById.get(edge.target);
+
+                    return (
+                      <div
+                        key={`${edge.source}-${edge.target}-${edge.type}`}
+                        style={{
+                          marginTop: "8px",
+                          paddingTop: "8px",
+                          borderTop:
+                            "1px solid rgba(128, 128, 128, 0.15)",
+                          fontSize: "12px",
+                        }}
+                      >
+                        <span>↓ {edge.type.replaceAll("_", " ")} → </span>
+                        <strong>
+                          {target?.label ?? edge.target}
+                        </strong>
+                      </div>
+                    );
+                  })}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+
 function ConfidenceAssessment({
   confidence,
 }: {
@@ -721,6 +827,13 @@ export default function Message({
               evidence={
                 message.investigationEvidence
               }
+            />
+          )}
+
+        {!isUser &&
+          message.evidenceGraph && (
+            <EvidenceGraphView
+              graph={message.evidenceGraph}
             />
           )}
 
