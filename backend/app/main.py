@@ -931,6 +931,18 @@ def challenge_stream(
 
                 answer = "".join(answer_parts)
 
+                # Persist the completed Challenge response
+                # in the same conversation history used by
+                # Copilot and Investigation.
+                conversation_manager.add_message(
+                    request.conversation_id,
+                    {
+                        "role": "assistant",
+                        "content": answer,
+                        "messageType": "challenge",
+                    },
+                )
+
                 yield (
                     json.dumps(
                         {
