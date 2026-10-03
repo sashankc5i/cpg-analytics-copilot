@@ -8,19 +8,19 @@ from groq import Groq
 from groq import RateLimitError
 
 from app.agent.prompts import SYSTEM_PROMPT
+from app.agent.clarification import build_clarification_response
+from app.analytics.metrics import resolve_metric_from_text
 from app.agent.tools import (
     TOOL_DEFINITIONS,
     execute_tool_as_json,
 )
+
 from app.config import get_settings
-from app.agent.session import conversation_manager
 from app.logging_config import get_logger, log_event
 from app.observability.telemetry import (
     record_llm_call,
     record_tool_execution,
 )
-
-
 settings = get_settings()
 
 MAX_TOOL_ITERATIONS = settings.max_tool_iterations
@@ -80,7 +80,21 @@ def _retry_delay_from_error(error: RateLimitError) -> float:
                 pass
 
     return DEFAULT_RETRY_DELAY_SECONDS
+def _is_daily_token_limit_error(error: RateLimitError) -> bool:
+    """
+    Detect provider responses indicating that the daily token
+    allowance has been exhausted.
 
+    Groq may describe this as TPD (tokens per day) or explicitly
+    mention a daily token limit.
+    """
+    message = str(error).lower()
+
+    return (
+        "tpd limit" in message
+        or "tokens per day" in message
+        or "daily token limit" in message
+    )
 
 def _build_analytical_context_message(
     analytical_context: dict | None,
@@ -131,7 +145,31 @@ def _build_analytical_context_message(
         ),
     }
 
+def _update_metric_context_from_message(
+    context: dict,
+    user_message: str,
+) -> dict:
+    """
+    Resolve an explicitly identifiable governed metric from the
+    current user message.
 
+    The resolver is deterministic and conservative. If the
+    current message does not identify exactly one governed metric,
+    the existing metric context is preserved.
+    """
+    updated_context = deepcopy(context)
+
+    metric = resolve_metric_from_text(user_message)
+
+    if metric is None:
+        return updated_context
+
+    updated_context["metric"] = {
+        "id": metric["metric_id"],
+        "display_name": metric["display_name"],
+    }
+
+    return updated_context
 def _update_analytical_context_from_tool(
     context: dict,
     tool_name: str,
@@ -197,14 +235,6 @@ class AnalyticsAgent:
     ):
         """
         Call the LLM and validate the provider response.
-
-        Provider rate limits are handled separately from other provider
-        failures. A bounded retry is used for HTTP 429 responses, while
-        other failures are converted into controlled RuntimeError
-        exceptions.
-
-        The completion token limit is intentionally bounded to reduce
-        unnecessary TPM consumption.
         """
 
         logger.info(
@@ -215,27 +245,29 @@ class AnalyticsAgent:
 
         call_start = time.perf_counter()
         retry_count = 0
+        response = None
 
-        for attempt in range(
-            MAX_RATE_LIMIT_RETRIES + 1
-        ):
+        for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
             try:
-                response = (
-                    self.client.chat.completions.create(
-                        model=self.model,
-                        messages=messages,
-                        tools=TOOL_DEFINITIONS,
-                        tool_choice="auto",
-                        temperature=0,
-                        max_completion_tokens=MAX_COMPLETION_TOKENS,
-                    )
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=TOOL_DEFINITIONS,
+                    tool_choice="auto",
+                    temperature=0,
+                    max_completion_tokens=MAX_COMPLETION_TOKENS,
                 )
 
                 usage = getattr(response, "usage", None)
+
                 prompt_tokens = getattr(usage, "prompt_tokens", None)
                 completion_tokens = getattr(usage, "completion_tokens", None)
                 total_tokens = getattr(usage, "total_tokens", None)
-                duration_ms = round((time.perf_counter() - call_start) * 1000, 2)
+
+                duration_ms = round(
+                    (time.perf_counter() - call_start) * 1000,
+                    2,
+                )
 
                 record_llm_call(
                     model=self.model,
@@ -261,8 +293,48 @@ class AnalyticsAgent:
                 break
 
             except RateLimitError as error:
+                if _is_daily_token_limit_error(error):
+                    duration_ms = round(
+                        (time.perf_counter() - call_start) * 1000,
+                        2,
+                    )
+
+                    record_llm_call(
+                        model=self.model,
+                        duration_ms=duration_ms,
+                        prompt_tokens=None,
+                        completion_tokens=None,
+                        total_tokens=None,
+                        success=False,
+                        retry_count=retry_count,
+                        error_type=type(error).__name__,
+                    )
+
+                    log_event(
+                        logger,
+                        "llm_call_failed",
+                        model=self.model,
+                        duration_ms=duration_ms,
+                        retry_count=retry_count,
+                        error_type=type(error).__name__,
+                        reason="daily_token_limit",
+                    )
+
+                    logger.warning(
+                        "agent_llm_daily_token_limit | model=%s",
+                        self.model,
+                    )
+
+                    raise RuntimeError(
+                        "The analytics model has reached its daily token "
+                        "limit. Please try again later."
+                    ) from error
+
                 if attempt >= MAX_RATE_LIMIT_RETRIES:
-                    duration_ms = round((time.perf_counter() - call_start) * 1000, 2)
+                    duration_ms = round(
+                        (time.perf_counter() - call_start) * 1000,
+                        2,
+                    )
 
                     record_llm_call(
                         model=self.model,
@@ -285,8 +357,7 @@ class AnalyticsAgent:
                     )
 
                     logger.exception(
-                        "agent_llm_rate_limit_exhausted | "
-                        "model=%s | attempts=%s",
+                        "agent_llm_rate_limit_exhausted | model=%s | attempts=%s",
                         self.model,
                         attempt + 1,
                     )
@@ -300,9 +371,7 @@ class AnalyticsAgent:
                 delay = _retry_delay_from_error(error)
 
                 logger.warning(
-                    "agent_llm_rate_limited | "
-                    "model=%s | attempt=%s/%s | "
-                    "retry_in=%.2fs",
+                    "agent_llm_rate_limited | model=%s | attempt=%s/%s | retry_in=%.2fs",
                     self.model,
                     attempt + 1,
                     MAX_RATE_LIMIT_RETRIES + 1,
@@ -312,7 +381,10 @@ class AnalyticsAgent:
                 time.sleep(delay)
 
             except Exception as error:
-                duration_ms = round((time.perf_counter() - call_start) * 1000, 2)
+                duration_ms = round(
+                    (time.perf_counter() - call_start) * 1000,
+                    2,
+                )
 
                 record_llm_call(
                     model=self.model,
@@ -344,11 +416,7 @@ class AnalyticsAgent:
                 "The analytics model returned an empty response."
             )
 
-        choices = getattr(
-            response,
-            "choices",
-            None,
-        )
+        choices = getattr(response, "choices", None)
 
         if not choices:
             logger.error(
@@ -360,11 +428,7 @@ class AnalyticsAgent:
                 "The analytics model returned an invalid response."
             )
 
-        assistant_message = getattr(
-            choices[0],
-            "message",
-            None,
-        )
+        assistant_message = getattr(choices[0], "message", None)
 
         if assistant_message is None:
             logger.error(
@@ -457,6 +521,36 @@ class AnalyticsAgent:
             }
         )
 
+        working_context = _update_metric_context_from_message(
+            context=working_context,
+            user_message=user_message,
+        )
+
+        clarification = build_clarification_response(user_message)
+
+        if clarification:
+            logger.info(
+                "agent_clarification_required | model=%s",
+                self.model,
+            )
+
+            return {
+                "answer": clarification,
+                "tools_used": [],
+                "tool_results": [],
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT,
+                    },
+                    {
+                        "role": "user",
+                        "content": user_message,
+                    },
+                ],
+                "analytical_context": working_context,
+            }
+
         messages = [
             {
                 "role": "system",
@@ -546,9 +640,27 @@ class AnalyticsAgent:
                         arguments,
                     )
 
+                    tool_duration_ms = round(
+                        (time.perf_counter() - tool_start) * 1000,
+                        2,
+                    )
+
                     record_tool_execution(
                         tool=tool_name,
-                        duration_ms=round((time.perf_counter() - tool_start) * 1000, 2),
+                        duration_ms=tool_duration_ms,
+                        success=True,
+                    )
+
+                    # OBS-005:
+                    # Emit a structured operational event separately from
+                    # the request-level telemetry record.
+                    #
+                    # Do not log tool arguments or tool results here.
+                    log_event(
+                        logger,
+                        "tool_execution_completed",
+                        tool=tool_name,
+                        duration_ms=tool_duration_ms,
                         success=True,
                     )
 
@@ -590,9 +702,26 @@ class AnalyticsAgent:
                     )
 
                 except Exception as error:
+                    tool_duration_ms = round(
+                        (time.perf_counter() - tool_start) * 1000,
+                        2,
+                    )
+
                     record_tool_execution(
                         tool=tool_name,
-                        duration_ms=round((time.perf_counter() - tool_start) * 1000, 2),
+                        duration_ms=tool_duration_ms,
+                        success=False,
+                        error_type=type(error).__name__,
+                    )
+
+                    # OBS-005:
+                    # Emit a structured failure event without exposing
+                    # tool arguments or result payloads.
+                    log_event(
+                        logger,
+                        "tool_execution_failed",
+                        tool=tool_name,
+                        duration_ms=tool_duration_ms,
                         success=False,
                         error_type=type(error).__name__,
                     )

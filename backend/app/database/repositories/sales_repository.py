@@ -1,7 +1,3 @@
-from multiprocessing.dummy import connection
-
-from httpx2 import query
-
 from app.database.connection import get_connection
 from app.database.repositories.base import (
     execute_repository_operation,
