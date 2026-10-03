@@ -5,6 +5,15 @@ import pytest
 from app.agent.agent import AnalyticsAgent
 
 
+class FakeRateLimitError(Exception):
+    """
+    Lightweight test exception used to simulate Groq RateLimitError.
+
+    The production agent catches RateLimitError, so the test patches
+    that class inside app.agent.agent with this test exception.
+    """
+
+
 def test_agent_initialization():
 
     with patch.dict(
@@ -203,3 +212,147 @@ def test_agent_rejects_non_string_final_answer():
             agent.run(
                 "What is our total revenue?"
             )
+
+
+# ----------------------------------------------------------------------
+# Rate-limit tests
+# ----------------------------------------------------------------------
+
+
+def test_agent_retries_temporary_rate_limit():
+
+    with patch.dict(
+        "os.environ",
+        {"GROQ_API_KEY": "test-key"},
+    ):
+
+        agent = AnalyticsAgent()
+
+        mock_response = MagicMock()
+
+        mock_response.choices[0].message.tool_calls = None
+
+        mock_response.choices[0].message.content = (
+            "Total revenue is ₹100 million."
+        )
+
+        agent.client.chat.completions.create = MagicMock(
+            side_effect=[
+                FakeRateLimitError(
+                    "Rate limit reached. "
+                    "Please try again in 1s."
+                ),
+                mock_response,
+            ]
+        )
+
+        with patch(
+            "app.agent.agent.RateLimitError",
+            FakeRateLimitError,
+        ), patch(
+            "app.agent.agent.time.sleep"
+        ) as mock_sleep:
+
+            result = agent.run(
+                "What is our total revenue?"
+            )
+
+        assert result["answer"] == (
+            "Total revenue is ₹100 million."
+        )
+
+        assert (
+            agent.client.chat.completions.create.call_count
+            == 2
+        )
+
+        mock_sleep.assert_called_once_with(1.0)
+
+
+def test_agent_fails_fast_on_daily_token_limit():
+
+    with patch.dict(
+        "os.environ",
+        {"GROQ_API_KEY": "test-key"},
+    ):
+
+        agent = AnalyticsAgent()
+
+        agent.client.chat.completions.create = MagicMock(
+            side_effect=FakeRateLimitError(
+                "Rate limit reached for model. "
+                "TPD limit: 200000, "
+                "Used: 198949, "
+                "Requested: 3452. "
+                "Please try again in 17m17s."
+            )
+        )
+
+        with patch(
+            "app.agent.agent.RateLimitError",
+            FakeRateLimitError,
+        ), patch(
+            "app.agent.agent.time.sleep"
+        ) as mock_sleep:
+
+            with pytest.raises(
+                RuntimeError,
+                match="daily token limit",
+            ):
+                agent.run(
+                    "What is our total revenue?"
+                )
+
+        # The important assertion:
+        # a TPD failure must not be retried.
+        assert (
+            agent.client.chat.completions.create.call_count
+            == 1
+        )
+
+        mock_sleep.assert_not_called()
+
+
+def test_agent_exhausts_temporary_rate_limit_retries():
+
+    with patch.dict(
+        "os.environ",
+        {"GROQ_API_KEY": "test-key"},
+    ):
+
+        agent = AnalyticsAgent()
+
+        agent.client.chat.completions.create = MagicMock(
+            side_effect=FakeRateLimitError(
+                "Rate limit reached. "
+                "Please try again in 1s."
+            )
+        )
+
+        with patch(
+            "app.agent.agent.RateLimitError",
+            FakeRateLimitError,
+        ), patch(
+            "app.agent.agent.time.sleep"
+        ) as mock_sleep:
+
+            with pytest.raises(
+                RuntimeError,
+                match="temporarily rate-limited",
+            ):
+                agent.run(
+                    "What is our total revenue?"
+                )
+
+        # MAX_RATE_LIMIT_RETRIES = 3
+        # Therefore:
+        #
+        # initial attempt
+        # + 3 retries
+        # = 4 provider calls
+        assert (
+            agent.client.chat.completions.create.call_count
+            == 4
+        )
+
+        assert mock_sleep.call_count == 3

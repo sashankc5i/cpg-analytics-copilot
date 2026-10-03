@@ -1,5 +1,6 @@
 import json
 import logging
+from pyexpat.errors import messages
 import re
 import time
 from copy import deepcopy
@@ -33,12 +34,44 @@ MAX_RETRY_DELAY_SECONDS = 30.0
 logger = logging.getLogger(__name__)
 
 
-def _retry_delay_from_error(error: RateLimitError) -> float:
+def _is_daily_token_limit(
+    error: RateLimitError,
+) -> bool:
+    """
+    Detect provider errors caused by a daily token limit.
+
+    Daily token exhaustion must fail fast because retrying within the
+    same request will not meaningfully change the available quota.
+    """
+
+    message = str(error).lower()
+
+    daily_limit_markers = (
+        "tpd",
+        "tokens per day",
+        "daily token",
+        "daily limit",
+        "per day",
+    )
+
+    return any(
+        marker in message
+        for marker in daily_limit_markers
+    )
+
+
+def _retry_delay_from_error(
+    error: RateLimitError,
+    attempt: int = 0,
+) -> float:
     """
     Extract Groq's suggested retry delay when it is present.
 
     Groq commonly includes a message such as:
     "Please try again in 17.67s."
+
+    If the provider does not provide a retry delay, use bounded
+    exponential backoff.
     """
 
     message = str(error)
@@ -59,11 +92,22 @@ def _retry_delay_from_error(error: RateLimitError) -> float:
             pass
 
     # Some provider responses expose Retry-After as a header.
-    response = getattr(error, "response", None)
-    headers = getattr(response, "headers", None)
+    response = getattr(
+        error,
+        "response",
+        None,
+    )
+
+    headers = getattr(
+        response,
+        "headers",
+        None,
+    )
 
     if headers:
-        retry_after = headers.get("retry-after")
+        retry_after = headers.get(
+            "retry-after"
+        )
 
         if retry_after:
             try:
@@ -74,7 +118,17 @@ def _retry_delay_from_error(error: RateLimitError) -> float:
             except (TypeError, ValueError):
                 pass
 
-    return DEFAULT_RETRY_DELAY_SECONDS
+    # Bounded exponential backoff:
+    #
+    # attempt 0 -> 5s
+    # attempt 1 -> 10s
+    # attempt 2 -> 20s
+    #
+    # Never exceed MAX_RETRY_DELAY_SECONDS.
+    return min(
+        DEFAULT_RETRY_DELAY_SECONDS * (2 ** attempt),
+        MAX_RETRY_DELAY_SECONDS,
+    )
 
 
 def _build_analytical_context_message(
@@ -187,16 +241,18 @@ class AnalyticsAgent:
         self.model = settings.groq_model
 
     def _call_llm(
-        self,
-        messages: list,
+    self,
+    messages: list,
     ):
         """
         Call the LLM and validate the provider response.
 
-        Provider rate limits are handled separately from other provider
-        failures. A bounded retry is used for HTTP 429 responses, while
-        other failures are converted into controlled RuntimeError
-        exceptions.
+        Rate limits are classified before retrying:
+
+        - Daily token exhaustion (TPD) fails immediately.
+        - Temporary rate limits use bounded retry with backoff.
+        - Other provider failures are converted into controlled
+          RuntimeError exceptions.
 
         The completion token limit is intentionally bounded to reduce
         unnecessary TPM consumption.
@@ -208,26 +264,51 @@ class AnalyticsAgent:
             len(messages),
         )
 
-        for attempt in range(
-            MAX_RATE_LIMIT_RETRIES + 1
-        ):
-            try:
-                response = (
-                    self.client.chat.completions.create(
-                        model=self.model,
-                        messages=messages,
-                        tools=TOOL_DEFINITIONS,
-                        tool_choice="auto",
-                        temperature=0,
-                        max_completion_tokens=MAX_COMPLETION_TOKENS,
-                    )
-                )
+        
 
+        response = None
+
+        for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=TOOL_DEFINITIONS,
+                    tool_choice="auto",
+                    max_tokens=MAX_COMPLETION_TOKENS,
+                    temperature=0,
+                )
                 break
 
             except RateLimitError as error:
+
+                # ---------------------------------------------------------
+                # Daily token exhaustion
+                # ---------------------------------------------------------
+                #
+                # A TPD limit cannot be solved by retrying the same request
+                # a few seconds later. Retrying here only wastes time and
+                # causes the request to hang unnecessarily.
+                #
+                if _is_daily_token_limit(error):
+                    logger.error(
+                        "agent_llm_daily_token_limit | "
+                        "model=%s | "
+                        "attempt=%s",
+                        self.model,
+                        attempt + 1,
+                    )
+
+                    raise RuntimeError(
+                        "The analytics model has reached its daily "
+                        "token limit. Please try again later."
+                    ) from error
+
+                # ---------------------------------------------------------
+                # Temporary rate limit
+                # ---------------------------------------------------------
                 if attempt >= MAX_RATE_LIMIT_RETRIES:
-                    logger.exception(
+                    logger.error(
                         "agent_llm_rate_limit_exhausted | "
                         "model=%s | attempts=%s",
                         self.model,
@@ -235,15 +316,19 @@ class AnalyticsAgent:
                     )
 
                     raise RuntimeError(
-                        "The analytics model is temporarily rate-limited. "
-                        "Please try again shortly."
+                        "The analytics model is temporarily "
+                        "rate-limited. Please try again shortly."
                     ) from error
 
-                delay = _retry_delay_from_error(error)
+                delay = _retry_delay_from_error(
+                    error,
+                    attempt=attempt,
+                )
 
                 logger.warning(
                     "agent_llm_rate_limited | "
-                    "model=%s | attempt=%s/%s | "
+                    "model=%s | "
+                    "attempt=%s/%s | "
                     "retry_in=%.2fs",
                     self.model,
                     attempt + 1,
