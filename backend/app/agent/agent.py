@@ -13,10 +13,14 @@ from app.agent.tools import (
     TOOL_DEFINITIONS,
     execute_tool_as_json,
 )
+from app.agent.clarification import (
+    build_clarification_response,
+)
 from app.config import get_settings
 from app.agent.session import conversation_manager
-
-
+from app.analytics.metrics import (
+    resolve_metric_from_text,
+)
 settings = get_settings()
 
 MAX_TOOL_ITERATIONS = settings.max_tool_iterations
@@ -180,7 +184,36 @@ def _build_analytical_context_message(
         ),
     }
 
+def _update_metric_context_from_message(
+    context: dict,
+    user_message: str,
+) -> dict:
+    """
+    Resolve an explicitly identifiable governed metric from the
+    current user message.
 
+    The resolver is deterministic and conservative. If the
+    current message does not identify exactly one governed metric,
+    the existing metric context is preserved.
+    """
+
+    updated_context = deepcopy(
+        context
+    )
+
+    metric = resolve_metric_from_text(
+        user_message
+    )
+
+    if metric is None:
+        return updated_context
+
+    updated_context["metric"] = {
+        "id": metric["metric_id"],
+        "display_name": metric["display_name"],
+    }
+
+    return updated_context
 def _update_analytical_context_from_tool(
     context: dict,
     tool_name: str,
@@ -453,8 +486,65 @@ class AnalyticsAgent:
             self.model,
         )
 
-        # Work on a request-local copy so a failed tool execution cannot
-        # accidentally mutate the persisted conversation context.
+        # ---------------------------------------------------------
+        # 1. Clarification gate
+        # ---------------------------------------------------------
+        #
+        # This is intentionally before the normal LLM/tool flow.
+        # If the request is genuinely ambiguous, return the
+        # clarification question immediately.
+        #
+        clarification = build_clarification_response(
+            user_message
+        )
+
+        if clarification:
+            logger.info(
+                "agent_clarification_requested | "
+                "reason=missing_comparison"
+            )
+
+            default_context = {
+                "metric": None,
+                "filters": {},
+                "date_range": {
+                    "start_date": None,
+                    "end_date": None,
+                },
+                "comparison_period": None,
+                "selected_entity": None,
+                "active_investigation": None,
+                "last_tool": None,
+            }
+
+            return {
+                "answer": clarification,
+                "tools_used": [],
+                "tool_results": [],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": user_message,
+                    },
+                    {
+                        "role": "assistant",
+                        "content": clarification,
+                    },
+                ],
+                "analytical_context": deepcopy(
+                    analytical_context
+                    or default_context
+                ),
+            }
+
+        # ---------------------------------------------------------
+        # 2. Normal analytical execution
+        # ---------------------------------------------------------
+        #
+        # IMPORTANT:
+        # This block must NOT be inside `if clarification:`.
+        #
+
         working_context = deepcopy(
             analytical_context
             or {
@@ -471,6 +561,11 @@ class AnalyticsAgent:
             }
         )
 
+        working_context = _update_metric_context_from_message(
+            context=working_context,
+            user_message=user_message,
+        )
+
         messages = [
             {
                 "role": "system",
@@ -483,7 +578,9 @@ class AnalyticsAgent:
         )
 
         if context_message:
-            messages.append(context_message)
+            messages.append(
+                context_message
+            )
 
         if history:
             messages.extend(history)
@@ -498,6 +595,10 @@ class AnalyticsAgent:
         tools_used = []
         tool_results = []
 
+        # ---------------------------------------------------------
+        # 3. LLM / tool-calling loop
+        # ---------------------------------------------------------
+
         for iteration in range(
             MAX_TOOL_ITERATIONS
         ):
@@ -508,6 +609,10 @@ class AnalyticsAgent:
             messages.append(
                 assistant_message
             )
+
+            # -----------------------------------------------------
+            # Final answer
+            # -----------------------------------------------------
 
             if not assistant_message.tool_calls:
                 answer = self._validate_final_answer(
@@ -531,6 +636,10 @@ class AnalyticsAgent:
                     "messages": messages,
                     "analytical_context": working_context,
                 }
+
+            # -----------------------------------------------------
+            # Tool execution
+            # -----------------------------------------------------
 
             for tool_call in (
                 assistant_message.tool_calls
@@ -558,9 +667,8 @@ class AnalyticsAgent:
                         arguments,
                     )
 
-                    # Update context only after the tool has successfully
-                    # executed. This prevents failed tool calls from
-                    # polluting the analytical state.
+                    # Update analytical context only after
+                    # successful tool execution.
                     working_context = (
                         _update_analytical_context_from_tool(
                             context=working_context,
@@ -574,8 +682,8 @@ class AnalyticsAgent:
                     )
 
                     try:
-                        parsed_result = (
-                            json.loads(result)
+                        parsed_result = json.loads(
+                            result
                         )
                     except json.JSONDecodeError:
                         parsed_result = result
@@ -630,6 +738,10 @@ class AnalyticsAgent:
                     }
                 )
 
+        # ---------------------------------------------------------
+        # 4. Maximum tool iterations exceeded
+        # ---------------------------------------------------------
+
         logger.error(
             "agent_max_tool_iterations_exceeded | "
             "model=%s | "
@@ -642,6 +754,5 @@ class AnalyticsAgent:
             "Agent exceeded maximum "
             "tool-calling iterations."
         )
-
 
 agent = AnalyticsAgent()
