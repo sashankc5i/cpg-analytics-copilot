@@ -253,10 +253,41 @@ def _update_analytical_context_from_tool(
         if "end_date" in filters:
             date_range["end_date"] = filters["end_date"]
 
+    # ---------------------------------------------------------
+    # Variance analysis context
+    # ---------------------------------------------------------
+    #
+    # A successful variance tool call establishes both the
+    # current analytical period and its comparison period.
+    #
+    if tool_name == "get_sales_variance":
+        date_range = updated_context.setdefault(
+            "date_range",
+            {
+                "start_date": None,
+                "end_date": None,
+            },
+        )
+
+        if arguments.get("current_start"):
+            date_range["start_date"] = (
+                arguments["current_start"]
+            )
+
+        if arguments.get("current_end"):
+            date_range["end_date"] = (
+                arguments["current_end"]
+            )
+
+        updated_context["comparison_period"] = {
+            "type": arguments.get(
+                "comparison_type"
+            ),
+        }
+
     updated_context["last_tool"] = tool_name
 
     return updated_context
-
 
 class AnalyticsAgent:
 

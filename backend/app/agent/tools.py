@@ -22,7 +22,9 @@ from app.analytics.inventory import (
 from app.analytics.anomalies import (
     get_revenue_anomalies,
 )
-
+from app.analytics.variance_analysis import (
+    get_sales_variance,
+)
 
 MAX_PRODUCT_LIMIT = 50
 
@@ -259,6 +261,72 @@ TOOL_DEFINITIONS = [
                 "required": [],
             },
         },
+    },      {
+        "type": "function",
+        "function": {
+            "name": "get_sales_variance",
+            "description": (
+                "Compare a governed sales metric between a current "
+                "period and a comparison period. Returns current "
+                "value, comparison value, absolute change, "
+                "percentage change, and direction. Supports "
+                "previous period, previous month, and year-over-year "
+                "comparisons. If the current period is not provided, "
+                "the latest available sales month is used. "
+                "Supports optional governed filters."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "metric_id": {
+                        "type": "string",
+                        "enum": [
+                            "revenue",
+                            "transactions",
+                            "units_sold",
+                            "average_transaction_value",
+                        ],
+                        "description": (
+                            "Governed metric to compare."
+                        ),
+                    },
+                    "current_start": {
+                        "type": "string",
+                        "description": (
+                            "Optional start date of the current "
+                            "analytical period in YYYY-MM-DD format. "
+                            "If omitted, the latest available "
+                            "sales month is used."
+                        ),
+                    },
+                    "current_end": {
+                        "type": "string",
+                        "description": (
+                            "Optional end date of the current "
+                            "analytical period in YYYY-MM-DD format. "
+                            "If omitted, the latest available "
+                            "sales month is used."
+                        ),
+                    },
+                    "comparison_type": {
+                        "type": "string",
+                        "enum": [
+                            "previous_period",
+                            "previous_month",
+                            "year_over_year",
+                        ],
+                        "description": (
+                            "Comparison period to use."
+                        ),
+                    },
+                    "filters": FILTER_SCHEMA,
+                },
+                "required": [
+                    "metric_id",
+                    "comparison_type",
+                ],
+            },
+        },
     },
 ]
 
@@ -275,6 +343,7 @@ AVAILABLE_FUNCTIONS = {
     "get_promotion_impact": get_promotion_impact,
     "get_stockout_rate": get_stockout_rate,
     "get_revenue_anomalies": get_revenue_anomalies,
+    "get_sales_variance": get_sales_variance,
 }
 
 
@@ -373,12 +442,39 @@ def execute_tool(
             filters=filters,
         )
 
-    filters = validated_arguments.get(
-        "filters"
-    )
+    if tool_name == "get_sales_variance":
+        metric_id = validated_arguments.get(
+            "metric_id"
+        )
+        if metric_id is None:
+            raise ValueError(
+                "Tool argument 'metric_id' is required."
+            )
+
+        comparison_type = validated_arguments.get(
+            "comparison_type"
+        )
+        if comparison_type is None:
+            raise ValueError(
+                "Tool argument 'comparison_type' is required."
+            )
+
+        return function(
+            metric_id=metric_id,
+            current_start=validated_arguments.get(
+                "current_start"
+            ),
+            current_end=validated_arguments.get(
+                "current_end"
+            ),
+            comparison_type=comparison_type,
+            filters=validated_arguments.get(
+                "filters"
+            ),
+        )
 
     return function(
-        filters=filters,
+        filters=validated_arguments.get("filters"),
     )
 
 

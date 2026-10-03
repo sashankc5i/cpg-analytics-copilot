@@ -73,6 +73,91 @@ def get_overall_sales_data(
         connection.close()
 
 
+def get_latest_sales_date(
+    filters: dict | None = None,
+) -> str | None:
+    """
+    Return the latest available transaction date.
+
+    Non-date analytical filters are preserved. Existing date filters
+    are removed because this function determines the latest available
+    date rather than querying an already-selected period.
+
+    Returns:
+        Latest transaction date as YYYY-MM-DD, or None when no
+        matching sales records exist.
+    """
+
+    connection = get_connection()
+
+    try:
+        normalized_filters = dict(filters or {})
+
+        normalized_filters.pop(
+            "start_date",
+            None,
+        )
+
+        normalized_filters.pop(
+            "end_date",
+            None,
+        )
+
+        (
+            filter_sql,
+            params,
+            needs_store_join,
+            needs_product_join,
+            needs_customer_join,
+        ) = build_sales_filter_sql(
+            normalized_filters
+        )
+
+        joins = ""
+
+        if needs_store_join:
+            joins += """
+                JOIN stores st
+                    ON s.store_id = st.store_id
+            """
+
+        if needs_product_join:
+            joins += """
+                JOIN products p
+                    ON s.product_id = p.product_id
+            """
+
+        if needs_customer_join:
+            joins += """
+                JOIN customers c
+                    ON s.customer_id = c.customer_id
+            """
+
+        query = f"""
+            SELECT
+                MAX(s.transaction_date) AS latest_sales_date
+            FROM sales s
+            {joins}
+            {filter_sql};
+        """
+
+        result = execute_repository_operation(
+            "get_latest_sales_date",
+            lambda: connection.execute(
+                query,
+                params,
+            ).fetchone(),
+        )
+
+        if not result:
+            return None
+
+        return result["latest_sales_date"]
+
+    finally:
+        connection.close()
+
+
 def get_sales_by_region_data(
     filters: dict | None = None,
 ) -> list[dict]:
@@ -346,20 +431,19 @@ def get_top_products_data(
         """
 
         query_params = (
-    *params,
-    limit,
-)
+            *params,
+            limit,
+        )
 
         results = execute_repository_operation(
             "get_top_products_data",
             lambda: connection.execute(
-            query,
-            query_params,
-        ).fetchall(),
-)
+                query,
+                query_params,
+            ).fetchall(),
+        )
 
         return [dict(row) for row in results]
-        
 
     finally:
         connection.close()

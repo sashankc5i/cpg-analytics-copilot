@@ -17,10 +17,11 @@ METRIC_REGISTRY = {
             "turnover",
         ],
         "tools": [
-            "get_overall_sales",
-            "get_sales_by_region",
-            "get_monthly_sales_trend",
-        ],
+    "get_overall_sales",
+    "get_sales_by_region",
+    "get_monthly_sales_trend",
+    "get_sales_variance",
+],
     },
     "transactions": {
         "metric_id": "transactions",
@@ -38,8 +39,8 @@ METRIC_REGISTRY = {
             "purchases",
             "number of purchases",
         ],
-        "tools": [
-            "get_overall_sales",
+            "tools": [
+                "get_overall_sales",
             "get_sales_by_region",
             "get_monthly_sales_trend",
         ],
@@ -60,10 +61,11 @@ METRIC_REGISTRY = {
             "volume sold",
         ],
         "tools": [
-            "get_overall_sales",
-            "get_sales_by_region",
-            "get_monthly_sales_trend",
-        ],
+    "get_overall_sales",
+    "get_sales_by_region",
+    "get_monthly_sales_trend",
+    "get_sales_variance",
+],
     },
     "average_transaction_value": {
         "metric_id": "average_transaction_value",
@@ -83,9 +85,10 @@ METRIC_REGISTRY = {
             "average purchase value",
         ],
         "tools": [
-            "get_overall_sales",
-            "get_sales_by_region",
-        ],
+    "get_overall_sales",
+    "get_sales_by_region",
+    "get_sales_variance",
+],
     },
     "stockout_rate": {
         "metric_id": "stockout_rate",

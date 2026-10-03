@@ -1,6 +1,8 @@
 import pytest
 
 from app.agent.tools import (
+    AVAILABLE_FUNCTIONS,
+    _validate_arguments,
     execute_tool,
     execute_tool_as_json,
 )
@@ -111,3 +113,44 @@ def test_execute_tool_as_json_returns_valid_json():
     parsed = json.loads(result)
 
     assert isinstance(parsed, dict)
+def test_get_sales_variance_is_registered():
+    assert "get_sales_variance" in AVAILABLE_FUNCTIONS
+def test_get_sales_variance_allows_omitted_current_period():
+    arguments = {
+        "metric_id": "revenue",
+        "comparison_type": "previous_month",
+    }
+
+    validated = _validate_arguments(
+        arguments
+    )
+
+    assert validated == arguments
+def test_get_sales_variance_accepts_explicit_current_period():
+    arguments = {
+        "metric_id": "revenue",
+        "current_start": "2026-09-01",
+        "current_end": "2026-09-30",
+        "comparison_type": "previous_month",
+    }
+
+    validated = _validate_arguments(
+        arguments
+    )
+
+    assert validated == arguments
+def test_get_sales_variance_execution_without_current_period():
+    arguments = {
+        "metric_id": "revenue",
+        "comparison_type": "previous_month",
+    }
+
+    result = execute_tool(
+        "get_sales_variance",
+        arguments,
+    )
+
+    assert result["metric"]["id"] == "revenue"
+    assert result["comparison_type"] == "previous_month"
+    assert "current_period" in result
+    assert "comparison_period" in result
