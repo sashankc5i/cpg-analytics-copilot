@@ -5,6 +5,11 @@ from fastapi import Request
 
 from app.logging_config import (
     get_logger,
+    log_event,
+)
+from app.observability.telemetry import (
+    clear_request_telemetry,
+    start_request_telemetry,
 )
 
 
@@ -27,6 +32,7 @@ async def request_logging_middleware(
     request_id = str(uuid.uuid4())
 
     request.state.request_id = request_id
+    start_request_telemetry(request_id)
 
     start_time = time.perf_counter()
 
@@ -50,14 +56,12 @@ async def request_logging_middleware(
 
         response.headers["X-Request-ID"] = request_id
 
-        logger.info(
-            "request_completed | "
-            "request_id=%s | "
-            "status=%s | "
-            "duration_ms=%s",
-            request_id,
-            response.status_code,
-            duration_ms,
+        log_event(
+            logger,
+            "request_completed",
+            request_id=request_id,
+            status=response.status_code,
+            duration_ms=duration_ms,
         )
 
         return response
@@ -77,3 +81,6 @@ async def request_logging_middleware(
         )
 
         raise
+
+    finally:
+        clear_request_telemetry()

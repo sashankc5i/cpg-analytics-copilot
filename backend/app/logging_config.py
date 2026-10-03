@@ -1,6 +1,7 @@
 import logging
 import re
 import sys
+from typing import Any
 
 from fastapi import Request
 
@@ -119,3 +120,25 @@ def sanitize_log_message(
         )
 
     return sanitized
+
+def log_event(
+    logger: logging.Logger,
+    event: str,
+    **fields: Any,
+) -> None:
+    """Emit a compact structured application log event.
+
+    Values are sanitized before logging so operational telemetry does not
+    accidentally expose common secret-like values.
+    """
+
+    parts = [event]
+
+    for key, value in fields.items():
+        parts.append(
+            sanitize_log_message(
+                f"{key}={value}"
+            )
+        )
+
+    logger.info(" | ".join(parts))

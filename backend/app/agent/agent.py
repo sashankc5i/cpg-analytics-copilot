@@ -1,6 +1,5 @@
 import json
 import logging
-from pyexpat.errors import messages
 import re
 import time
 from copy import deepcopy
@@ -13,14 +12,15 @@ from app.agent.tools import (
     TOOL_DEFINITIONS,
     execute_tool_as_json,
 )
-from app.agent.clarification import (
-    build_clarification_response,
-)
 from app.config import get_settings
 from app.agent.session import conversation_manager
-from app.analytics.metrics import (
-    resolve_metric_from_text,
+from app.logging_config import get_logger, log_event
+from app.observability.telemetry import (
+    record_llm_call,
+    record_tool_execution,
 )
+
+
 settings = get_settings()
 
 MAX_TOOL_ITERATIONS = settings.max_tool_iterations
@@ -35,47 +35,15 @@ MAX_RATE_LIMIT_RETRIES = 3
 DEFAULT_RETRY_DELAY_SECONDS = 5.0
 MAX_RETRY_DELAY_SECONDS = 30.0
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
-def _is_daily_token_limit(
-    error: RateLimitError,
-) -> bool:
-    """
-    Detect provider errors caused by a daily token limit.
-
-    Daily token exhaustion must fail fast because retrying within the
-    same request will not meaningfully change the available quota.
-    """
-
-    message = str(error).lower()
-
-    daily_limit_markers = (
-        "tpd",
-        "tokens per day",
-        "daily token",
-        "daily limit",
-        "per day",
-    )
-
-    return any(
-        marker in message
-        for marker in daily_limit_markers
-    )
-
-
-def _retry_delay_from_error(
-    error: RateLimitError,
-    attempt: int = 0,
-) -> float:
+def _retry_delay_from_error(error: RateLimitError) -> float:
     """
     Extract Groq's suggested retry delay when it is present.
 
     Groq commonly includes a message such as:
     "Please try again in 17.67s."
-
-    If the provider does not provide a retry delay, use bounded
-    exponential backoff.
     """
 
     message = str(error)
@@ -96,22 +64,11 @@ def _retry_delay_from_error(
             pass
 
     # Some provider responses expose Retry-After as a header.
-    response = getattr(
-        error,
-        "response",
-        None,
-    )
-
-    headers = getattr(
-        response,
-        "headers",
-        None,
-    )
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
 
     if headers:
-        retry_after = headers.get(
-            "retry-after"
-        )
+        retry_after = headers.get("retry-after")
 
         if retry_after:
             try:
@@ -122,17 +79,7 @@ def _retry_delay_from_error(
             except (TypeError, ValueError):
                 pass
 
-    # Bounded exponential backoff:
-    #
-    # attempt 0 -> 5s
-    # attempt 1 -> 10s
-    # attempt 2 -> 20s
-    #
-    # Never exceed MAX_RETRY_DELAY_SECONDS.
-    return min(
-        DEFAULT_RETRY_DELAY_SECONDS * (2 ** attempt),
-        MAX_RETRY_DELAY_SECONDS,
-    )
+    return DEFAULT_RETRY_DELAY_SECONDS
 
 
 def _build_analytical_context_message(
@@ -184,36 +131,7 @@ def _build_analytical_context_message(
         ),
     }
 
-def _update_metric_context_from_message(
-    context: dict,
-    user_message: str,
-) -> dict:
-    """
-    Resolve an explicitly identifiable governed metric from the
-    current user message.
 
-    The resolver is deterministic and conservative. If the
-    current message does not identify exactly one governed metric,
-    the existing metric context is preserved.
-    """
-
-    updated_context = deepcopy(
-        context
-    )
-
-    metric = resolve_metric_from_text(
-        user_message
-    )
-
-    if metric is None:
-        return updated_context
-
-    updated_context["metric"] = {
-        "id": metric["metric_id"],
-        "display_name": metric["display_name"],
-    }
-
-    return updated_context
 def _update_analytical_context_from_tool(
     context: dict,
     tool_name: str,
@@ -253,41 +171,10 @@ def _update_analytical_context_from_tool(
         if "end_date" in filters:
             date_range["end_date"] = filters["end_date"]
 
-    # ---------------------------------------------------------
-    # Variance analysis context
-    # ---------------------------------------------------------
-    #
-    # A successful variance tool call establishes both the
-    # current analytical period and its comparison period.
-    #
-    if tool_name == "get_sales_variance":
-        date_range = updated_context.setdefault(
-            "date_range",
-            {
-                "start_date": None,
-                "end_date": None,
-            },
-        )
-
-        if arguments.get("current_start"):
-            date_range["start_date"] = (
-                arguments["current_start"]
-            )
-
-        if arguments.get("current_end"):
-            date_range["end_date"] = (
-                arguments["current_end"]
-            )
-
-        updated_context["comparison_period"] = {
-            "type": arguments.get(
-                "comparison_type"
-            ),
-        }
-
     updated_context["last_tool"] = tool_name
 
     return updated_context
+
 
 class AnalyticsAgent:
 
@@ -305,18 +192,16 @@ class AnalyticsAgent:
         self.model = settings.groq_model
 
     def _call_llm(
-    self,
-    messages: list,
+        self,
+        messages: list,
     ):
         """
         Call the LLM and validate the provider response.
 
-        Rate limits are classified before retrying:
-
-        - Daily token exhaustion (TPD) fails immediately.
-        - Temporary rate limits use bounded retry with backoff.
-        - Other provider failures are converted into controlled
-          RuntimeError exceptions.
+        Provider rate limits are handled separately from other provider
+        failures. A bounded retry is used for HTTP 429 responses, while
+        other failures are converted into controlled RuntimeError
+        exceptions.
 
         The completion token limit is intentionally bounded to reduce
         unnecessary TPM consumption.
@@ -328,51 +213,78 @@ class AnalyticsAgent:
             len(messages),
         )
 
-        
+        call_start = time.perf_counter()
+        retry_count = 0
 
-        response = None
-
-        for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+        for attempt in range(
+            MAX_RATE_LIMIT_RETRIES + 1
+        ):
             try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=TOOL_DEFINITIONS,
-                    tool_choice="auto",
-                    max_tokens=MAX_COMPLETION_TOKENS,
-                    temperature=0,
+                response = (
+                    self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        tools=TOOL_DEFINITIONS,
+                        tool_choice="auto",
+                        temperature=0,
+                        max_completion_tokens=MAX_COMPLETION_TOKENS,
+                    )
                 )
+
+                usage = getattr(response, "usage", None)
+                prompt_tokens = getattr(usage, "prompt_tokens", None)
+                completion_tokens = getattr(usage, "completion_tokens", None)
+                total_tokens = getattr(usage, "total_tokens", None)
+                duration_ms = round((time.perf_counter() - call_start) * 1000, 2)
+
+                record_llm_call(
+                    model=self.model,
+                    duration_ms=duration_ms,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    success=True,
+                    retry_count=retry_count,
+                )
+
+                log_event(
+                    logger,
+                    "llm_call_completed",
+                    model=self.model,
+                    duration_ms=duration_ms,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    retry_count=retry_count,
+                )
+
                 break
 
             except RateLimitError as error:
+                if attempt >= MAX_RATE_LIMIT_RETRIES:
+                    duration_ms = round((time.perf_counter() - call_start) * 1000, 2)
 
-                # ---------------------------------------------------------
-                # Daily token exhaustion
-                # ---------------------------------------------------------
-                #
-                # A TPD limit cannot be solved by retrying the same request
-                # a few seconds later. Retrying here only wastes time and
-                # causes the request to hang unnecessarily.
-                #
-                if _is_daily_token_limit(error):
-                    logger.error(
-                        "agent_llm_daily_token_limit | "
-                        "model=%s | "
-                        "attempt=%s",
-                        self.model,
-                        attempt + 1,
+                    record_llm_call(
+                        model=self.model,
+                        duration_ms=duration_ms,
+                        prompt_tokens=None,
+                        completion_tokens=None,
+                        total_tokens=None,
+                        success=False,
+                        retry_count=retry_count,
+                        error_type=type(error).__name__,
                     )
 
-                    raise RuntimeError(
-                        "The analytics model has reached its daily "
-                        "token limit. Please try again later."
-                    ) from error
+                    log_event(
+                        logger,
+                        "llm_call_failed",
+                        model=self.model,
+                        duration_ms=duration_ms,
+                        retry_count=retry_count,
+                        error_type=type(error).__name__,
+                    )
 
-                # ---------------------------------------------------------
-                # Temporary rate limit
-                # ---------------------------------------------------------
-                if attempt >= MAX_RATE_LIMIT_RETRIES:
-                    logger.error(
+                    logger.exception(
                         "agent_llm_rate_limit_exhausted | "
                         "model=%s | attempts=%s",
                         self.model,
@@ -380,19 +292,16 @@ class AnalyticsAgent:
                     )
 
                     raise RuntimeError(
-                        "The analytics model is temporarily "
-                        "rate-limited. Please try again shortly."
+                        "The analytics model is temporarily rate-limited. "
+                        "Please try again shortly."
                     ) from error
 
-                delay = _retry_delay_from_error(
-                    error,
-                    attempt=attempt,
-                )
+                retry_count += 1
+                delay = _retry_delay_from_error(error)
 
                 logger.warning(
                     "agent_llm_rate_limited | "
-                    "model=%s | "
-                    "attempt=%s/%s | "
+                    "model=%s | attempt=%s/%s | "
                     "retry_in=%.2fs",
                     self.model,
                     attempt + 1,
@@ -403,6 +312,19 @@ class AnalyticsAgent:
                 time.sleep(delay)
 
             except Exception as error:
+                duration_ms = round((time.perf_counter() - call_start) * 1000, 2)
+
+                record_llm_call(
+                    model=self.model,
+                    duration_ms=duration_ms,
+                    prompt_tokens=None,
+                    completion_tokens=None,
+                    total_tokens=None,
+                    success=False,
+                    retry_count=retry_count,
+                    error_type=type(error).__name__,
+                )
+
                 logger.exception(
                     "agent_llm_call_failed | model=%s",
                     self.model,
@@ -517,65 +439,8 @@ class AnalyticsAgent:
             self.model,
         )
 
-        # ---------------------------------------------------------
-        # 1. Clarification gate
-        # ---------------------------------------------------------
-        #
-        # This is intentionally before the normal LLM/tool flow.
-        # If the request is genuinely ambiguous, return the
-        # clarification question immediately.
-        #
-        clarification = build_clarification_response(
-            user_message
-        )
-
-        if clarification:
-            logger.info(
-                "agent_clarification_requested | "
-                "reason=missing_comparison"
-            )
-
-            default_context = {
-                "metric": None,
-                "filters": {},
-                "date_range": {
-                    "start_date": None,
-                    "end_date": None,
-                },
-                "comparison_period": None,
-                "selected_entity": None,
-                "active_investigation": None,
-                "last_tool": None,
-            }
-
-            return {
-                "answer": clarification,
-                "tools_used": [],
-                "tool_results": [],
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": user_message,
-                    },
-                    {
-                        "role": "assistant",
-                        "content": clarification,
-                    },
-                ],
-                "analytical_context": deepcopy(
-                    analytical_context
-                    or default_context
-                ),
-            }
-
-        # ---------------------------------------------------------
-        # 2. Normal analytical execution
-        # ---------------------------------------------------------
-        #
-        # IMPORTANT:
-        # This block must NOT be inside `if clarification:`.
-        #
-
+        # Work on a request-local copy so a failed tool execution cannot
+        # accidentally mutate the persisted conversation context.
         working_context = deepcopy(
             analytical_context
             or {
@@ -592,11 +457,6 @@ class AnalyticsAgent:
             }
         )
 
-        working_context = _update_metric_context_from_message(
-            context=working_context,
-            user_message=user_message,
-        )
-
         messages = [
             {
                 "role": "system",
@@ -609,9 +469,7 @@ class AnalyticsAgent:
         )
 
         if context_message:
-            messages.append(
-                context_message
-            )
+            messages.append(context_message)
 
         if history:
             messages.extend(history)
@@ -626,10 +484,6 @@ class AnalyticsAgent:
         tools_used = []
         tool_results = []
 
-        # ---------------------------------------------------------
-        # 3. LLM / tool-calling loop
-        # ---------------------------------------------------------
-
         for iteration in range(
             MAX_TOOL_ITERATIONS
         ):
@@ -640,10 +494,6 @@ class AnalyticsAgent:
             messages.append(
                 assistant_message
             )
-
-            # -----------------------------------------------------
-            # Final answer
-            # -----------------------------------------------------
 
             if not assistant_message.tool_calls:
                 answer = self._validate_final_answer(
@@ -668,10 +518,6 @@ class AnalyticsAgent:
                     "analytical_context": working_context,
                 }
 
-            # -----------------------------------------------------
-            # Tool execution
-            # -----------------------------------------------------
-
             for tool_call in (
                 assistant_message.tool_calls
             ):
@@ -687,6 +533,8 @@ class AnalyticsAgent:
                     iteration + 1,
                 )
 
+                tool_start = time.perf_counter()
+
                 try:
                     arguments = json.loads(
                         tool_call.function.arguments
@@ -698,8 +546,15 @@ class AnalyticsAgent:
                         arguments,
                     )
 
-                    # Update analytical context only after
-                    # successful tool execution.
+                    record_tool_execution(
+                        tool=tool_name,
+                        duration_ms=round((time.perf_counter() - tool_start) * 1000, 2),
+                        success=True,
+                    )
+
+                    # Update context only after the tool has successfully
+                    # executed. This prevents failed tool calls from
+                    # polluting the analytical state.
                     working_context = (
                         _update_analytical_context_from_tool(
                             context=working_context,
@@ -713,8 +568,8 @@ class AnalyticsAgent:
                     )
 
                     try:
-                        parsed_result = json.loads(
-                            result
+                        parsed_result = (
+                            json.loads(result)
                         )
                     except json.JSONDecodeError:
                         parsed_result = result
@@ -735,6 +590,13 @@ class AnalyticsAgent:
                     )
 
                 except Exception as error:
+                    record_tool_execution(
+                        tool=tool_name,
+                        duration_ms=round((time.perf_counter() - tool_start) * 1000, 2),
+                        success=False,
+                        error_type=type(error).__name__,
+                    )
+
                     logger.exception(
                         "agent_tool_execution_failed | "
                         "tool=%s | "
@@ -769,10 +631,6 @@ class AnalyticsAgent:
                     }
                 )
 
-        # ---------------------------------------------------------
-        # 4. Maximum tool iterations exceeded
-        # ---------------------------------------------------------
-
         logger.error(
             "agent_max_tool_iterations_exceeded | "
             "model=%s | "
@@ -785,5 +643,6 @@ class AnalyticsAgent:
             "Agent exceeded maximum "
             "tool-calling iterations."
         )
+
 
 agent = AnalyticsAgent()

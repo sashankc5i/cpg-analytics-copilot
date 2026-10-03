@@ -93,3 +93,23 @@ def test_sanitize_log_message_handles_non_string_values():
     )
 
     assert sanitized == "12345"
+
+def test_log_event_formats_and_sanitizes_fields(caplog):
+    from app.logging_config import get_logger, log_event
+
+    logger = get_logger("test-observability")
+
+    with caplog.at_level("INFO"):
+        log_event(
+            logger,
+            "llm_call_completed",
+            request_id="req-123",
+            total_tokens=185,
+            api_key="should-not-appear",
+        )
+
+    assert "llm_call_completed" in caplog.text
+    assert "request_id=req-123" in caplog.text
+    assert "total_tokens=185" in caplog.text
+    assert "should-not-appear" not in caplog.text
+    assert "api_key=[REDACTED]" in caplog.text

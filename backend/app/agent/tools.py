@@ -25,6 +25,16 @@ from app.analytics.anomalies import (
 from app.analytics.variance_analysis import (
     get_sales_variance,
 )
+from app.analytics.drilldown import (
+    get_hierarchical_drilldown,
+)
+from app.analytics.data_quality import (
+    get_data_quality_indicators,
+)
+from app.analytics.freshness import (
+    get_data_freshness,
+)
+
 
 MAX_PRODUCT_LIMIT = 50
 
@@ -261,7 +271,9 @@ TOOL_DEFINITIONS = [
                 "required": [],
             },
         },
-    },      {
+    },
+
+    {
         "type": "function",
         "function": {
             "name": "get_sales_variance",
@@ -286,26 +298,20 @@ TOOL_DEFINITIONS = [
                             "units_sold",
                             "average_transaction_value",
                         ],
-                        "description": (
-                            "Governed metric to compare."
-                        ),
+                        "description": "Governed metric to compare.",
                     },
                     "current_start": {
                         "type": "string",
                         "description": (
-                            "Optional start date of the current "
-                            "analytical period in YYYY-MM-DD format. "
-                            "If omitted, the latest available "
-                            "sales month is used."
+                            "Optional start date of the current analytical "
+                            "period in YYYY-MM-DD format."
                         ),
                     },
                     "current_end": {
                         "type": "string",
                         "description": (
-                            "Optional end date of the current "
-                            "analytical period in YYYY-MM-DD format. "
-                            "If omitted, the latest available "
-                            "sales month is used."
+                            "Optional end date of the current analytical "
+                            "period in YYYY-MM-DD format."
                         ),
                     },
                     "comparison_type": {
@@ -315,9 +321,7 @@ TOOL_DEFINITIONS = [
                             "previous_month",
                             "year_over_year",
                         ],
-                        "description": (
-                            "Comparison period to use."
-                        ),
+                        "description": "Comparison period to use.",
                     },
                     "filters": FILTER_SCHEMA,
                 },
@@ -325,6 +329,74 @@ TOOL_DEFINITIONS = [
                     "metric_id",
                     "comparison_type",
                 ],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_hierarchical_drilldown",
+            "description": (
+                "Drill down through the CPG analytical hierarchy "
+                "from company to region, category, or product. "
+                "Preserves governed filters for the selected scope."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "level": {
+                        "type": "string",
+                        "enum": [
+                            "company",
+                            "region",
+                            "category",
+                            "product",
+                        ],
+                        "description": "Hierarchy level to retrieve.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 10,
+                        "description": "Maximum number of product results.",
+                    },
+                    "filters": FILTER_SCHEMA,
+                },
+                "required": ["level"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_data_quality_indicators",
+            "description": (
+                "Surface deterministic data-quality indicators across "
+                "the CPG dataset, including missing values, duplicate "
+                "keys, referential integrity issues, and invalid sales values."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_data_freshness",
+            "description": (
+                "Show deterministic data freshness metadata based on "
+                "the latest available data date for each source table. "
+                "The application does not currently store physical "
+                "ingestion timestamps."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
             },
         },
     },
@@ -344,6 +416,9 @@ AVAILABLE_FUNCTIONS = {
     "get_stockout_rate": get_stockout_rate,
     "get_revenue_anomalies": get_revenue_anomalies,
     "get_sales_variance": get_sales_variance,
+    "get_hierarchical_drilldown": get_hierarchical_drilldown,
+    "get_data_quality_indicators": get_data_quality_indicators,
+    "get_data_freshness": get_data_freshness,
 }
 
 
@@ -443,38 +518,33 @@ def execute_tool(
         )
 
     if tool_name == "get_sales_variance":
-        metric_id = validated_arguments.get(
-            "metric_id"
-        )
-        if metric_id is None:
-            raise ValueError(
-                "Tool argument 'metric_id' is required."
-            )
-
-        comparison_type = validated_arguments.get(
-            "comparison_type"
-        )
-        if comparison_type is None:
-            raise ValueError(
-                "Tool argument 'comparison_type' is required."
-            )
-
         return function(
-            metric_id=metric_id,
-            current_start=validated_arguments.get(
-                "current_start"
-            ),
-            current_end=validated_arguments.get(
-                "current_end"
-            ),
-            comparison_type=comparison_type,
-            filters=validated_arguments.get(
-                "filters"
-            ),
+            metric_id=validated_arguments["metric_id"],
+            current_start=validated_arguments.get("current_start"),
+            current_end=validated_arguments.get("current_end"),
+            comparison_type=validated_arguments["comparison_type"],
+            filters=validated_arguments.get("filters"),
         )
+
+    if tool_name == "get_hierarchical_drilldown":
+        return function(
+            level=validated_arguments["level"],
+            limit=validated_arguments.get("limit", 10),
+            filters=validated_arguments.get("filters"),
+        )
+
+    if tool_name in {
+        "get_data_quality_indicators",
+        "get_data_freshness",
+    }:
+        return function()
+
+    filters = validated_arguments.get(
+        "filters"
+    )
 
     return function(
-        filters=validated_arguments.get("filters"),
+        filters=filters,
     )
 
 
