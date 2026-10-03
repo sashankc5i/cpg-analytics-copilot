@@ -10,6 +10,7 @@ from app.agent.evidence_graph import build_evidence_graph
 from app.agent.investigation_session import (
     investigation_session_manager,
 )
+from app.agent.hypothesis_ranking import rank_hypotheses
 from app.agent.retry import execute_with_retry
 from app.agent.tools import execute_tool
 from app.config import get_settings
@@ -556,6 +557,27 @@ def evidence_collector(
 
 
 # ============================================================
+# Hypothesis Ranking
+# ============================================================
+
+def rank_hypothesis_results(
+    state: InvestigationState,
+) -> dict:
+    """Rank hypotheses using deterministic evidence coverage."""
+    ranked = rank_hypotheses(
+        hypotheses=state["hypotheses"],
+        evidence=state["evidence"],
+    )
+
+    print(
+        "[Hypothesis Ranking] "
+        f"Ranked {len(ranked)} hypotheses"
+    )
+
+    return {"hypotheses": ranked}
+
+
+# ============================================================
 # Claim Generator
 # ============================================================
 
@@ -1080,6 +1102,11 @@ def build_investigation_graph():
     )
 
     graph.add_node(
+        "hypothesis_ranking",
+        rank_hypothesis_results,
+    )
+
+    graph.add_node(
         "claim_generator",
         generate_claims,
     )
@@ -1116,6 +1143,11 @@ def build_investigation_graph():
 
     graph.add_edge(
         "evidence_collector",
+        "hypothesis_ranking",
+    )
+
+    graph.add_edge(
+        "hypothesis_ranking",
         "claim_generator",
     )
 
@@ -1173,6 +1205,11 @@ def build_investigation_preparation_graph():
     )
 
     graph.add_node(
+        "hypothesis_ranking",
+        rank_hypothesis_results,
+    )
+
+    graph.add_node(
         "claim_generator",
         generate_claims,
     )
@@ -1204,6 +1241,11 @@ def build_investigation_preparation_graph():
 
     graph.add_edge(
         "evidence_collector",
+        "hypothesis_ranking",
+    )
+
+    graph.add_edge(
+        "hypothesis_ranking",
         "claim_generator",
     )
 
@@ -1239,10 +1281,30 @@ def prepare_investigation(
     investigation_id: str,
 ):
 
+    replay_requested = question.strip().lower() in {
+        "replay",
+        "replay investigation",
+        "replay the investigation",
+        "replay the last investigation",
+        "rerun",
+        "rerun investigation",
+        "rerun the last investigation",
+    }
+
     history = (
         investigation_session_manager
         .get_history(investigation_id)
     )
+
+    if replay_requested:
+        previous = investigation_session_manager.get_latest_investigation(
+            investigation_id
+        )
+        question = previous.get("question") or ""
+        if not question:
+            raise ValueError(
+                "There is no previous investigation to replay."
+            )
 
     result = (
         investigation_preparation_graph.invoke(

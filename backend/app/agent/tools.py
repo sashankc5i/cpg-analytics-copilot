@@ -34,9 +34,36 @@ from app.analytics.data_quality import (
 from app.analytics.freshness import (
     get_data_freshness,
 )
+from app.analytics.investigation_drivers import (
+    get_driver_decomposition,
+    get_contribution_analysis,
+)
 
 
 MAX_PRODUCT_LIMIT = 50
+
+
+STOCKOUT_FILTER_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Optional region filter. Stockout rate currently supports "
+        "region only; date, category, brand, and customer segment "
+        "filters are not supported by this metric."
+    ),
+    "properties": {
+        "region": {
+            "oneOf": [
+                {"type": "string"},
+                {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 10,
+                },
+            ]
+        }
+    },
+    "additionalProperties": False,
+}
 
 
 FILTER_SCHEMA = {
@@ -238,13 +265,14 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "get_stockout_rate",
             "description": (
-                "Get stockout rates by region. "
-                "Supports optional filters."
+                "Get stockout rates by region. Supports an optional "
+                "region filter only. Date, category, brand, and "
+                "customer segment filters are not supported."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "filters": FILTER_SCHEMA,
+                    "filters": STOCKOUT_FILTER_SCHEMA,
                 },
                 "required": [],
             },
@@ -386,6 +414,106 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "get_driver_decomposition",
+            "description": (
+                "Decompose a governed metric change between a current "
+                "period and comparison period by region, category, or "
+                "product. Returns driver-level current value, comparison "
+                "value, absolute change, and direction."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "metric_id": {
+                        "type": "string",
+                        "enum": [
+                            "revenue",
+                            "transactions",
+                            "units_sold",
+                        ],
+                    },
+                    "current_start": {"type": "string"},
+                    "current_end": {"type": "string"},
+                    "comparison_type": {
+                        "type": "string",
+                        "enum": [
+                            "previous_period",
+                            "previous_month",
+                            "year_over_year",
+                        ],
+                        "default": "previous_period",
+                    },
+                    "level": {
+                        "type": "string",
+                        "enum": [
+                            "region",
+                            "category",
+                            "product",
+                        ],
+                        "default": "region",
+                    },
+                    "filters": FILTER_SCHEMA,
+                },
+                "required": [
+                    "metric_id",
+                    "current_start",
+                    "current_end",
+                ],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_contribution_analysis",
+            "description": (
+                "Quantify each region, category, or product's contribution "
+                "to the total change of a governed sales metric."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "metric_id": {
+                        "type": "string",
+                        "enum": [
+                            "revenue",
+                            "transactions",
+                            "units_sold",
+                        ],
+                    },
+                    "current_start": {"type": "string"},
+                    "current_end": {"type": "string"},
+                    "comparison_type": {
+                        "type": "string",
+                        "enum": [
+                            "previous_period",
+                            "previous_month",
+                            "year_over_year",
+                        ],
+                        "default": "previous_period",
+                    },
+                    "level": {
+                        "type": "string",
+                        "enum": [
+                            "region",
+                            "category",
+                            "product",
+                        ],
+                        "default": "region",
+                    },
+                    "filters": FILTER_SCHEMA,
+                },
+                "required": [
+                    "metric_id",
+                    "current_start",
+                    "current_end",
+                ],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_data_freshness",
             "description": (
                 "Show deterministic data freshness metadata based on "
@@ -419,11 +547,14 @@ AVAILABLE_FUNCTIONS = {
     "get_hierarchical_drilldown": get_hierarchical_drilldown,
     "get_data_quality_indicators": get_data_quality_indicators,
     "get_data_freshness": get_data_freshness,
+    "get_driver_decomposition": get_driver_decomposition,
+    "get_contribution_analysis": get_contribution_analysis,
 }
 
 
 def _validate_arguments(
     arguments,
+    tool_name: str | None = None,
 ) -> dict:
     """
     Validate and normalize tool arguments.
@@ -457,6 +588,19 @@ def _validate_arguments(
                 normalize_filters(filters)
             )
 
+    if tool_name == "get_stockout_rate":
+        filters = validated_arguments.get("filters") or {}
+        unsupported = sorted(
+            key for key in filters
+            if key != "region"
+        )
+        if unsupported:
+            raise ValueError(
+                "Stockout rate currently supports only the region "
+                "filter. Unsupported filters: "
+                + ", ".join(unsupported)
+            )
+
     return validated_arguments
 
 
@@ -480,7 +624,8 @@ def execute_tool(
         )
 
     validated_arguments = _validate_arguments(
-        arguments
+        arguments,
+        tool_name=tool_name,
     )
 
     function = AVAILABLE_FUNCTIONS[tool_name]
@@ -538,6 +683,25 @@ def execute_tool(
         "get_data_freshness",
     }:
         return function()
+
+    if tool_name in {
+        "get_driver_decomposition",
+        "get_contribution_analysis",
+    }:
+        return function(
+            metric_id=validated_arguments["metric_id"],
+            current_start=validated_arguments["current_start"],
+            current_end=validated_arguments["current_end"],
+            comparison_type=validated_arguments.get(
+                "comparison_type",
+                "previous_period",
+            ),
+            level=validated_arguments.get(
+                "level",
+                "region",
+            ),
+            filters=validated_arguments.get("filters"),
+        )
 
     filters = validated_arguments.get(
         "filters"

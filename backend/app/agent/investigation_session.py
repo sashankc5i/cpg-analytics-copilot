@@ -11,6 +11,7 @@ def _build_session() -> dict[str, Any]:
         "latest_claims": [],
         "latest_confidence": {},
         "latest_answer": "",
+        "question": "",
     }
 
 
@@ -38,6 +39,7 @@ class InvestigationSessionManager:
         claims: list[dict[str, Any]] | None = None,
         confidence: dict[str, Any] | None = None,
         answer: str,
+        question: str | None = None,
     ):
         session = self.sessions[investigation_id]
         session["latest_plan"] = deepcopy(plan)
@@ -45,6 +47,8 @@ class InvestigationSessionManager:
         session["latest_claims"] = deepcopy(claims or [])
         session["latest_confidence"] = deepcopy(confidence or {})
         session["latest_answer"] = answer
+        if question is not None:
+            session["question"] = question
 
     def get_latest_investigation(self, investigation_id):
         session = self.get_session(investigation_id)
@@ -54,6 +58,7 @@ class InvestigationSessionManager:
             "claims": deepcopy(session["latest_claims"]),
             "confidence": deepcopy(session["latest_confidence"]),
             "answer": session["latest_answer"],
+            "question": session["question"],
         }
 
     def has_investigation(self, investigation_id):

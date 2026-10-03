@@ -18,6 +18,8 @@ def test_data_feature_tools_are_registered():
         "get_hierarchical_drilldown",
         "get_data_quality_indicators",
         "get_data_freshness",
+        "get_driver_decomposition",
+        "get_contribution_analysis",
     }
 
     assert expected.issubset(_tool_names())

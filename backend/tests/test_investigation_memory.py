@@ -683,3 +683,20 @@ def test_clear_resets_investigation_without_removing_session():
         .get_history("investigation-1")
         == []
     )
+
+def test_investigation_session_stores_last_question_for_replay():
+    investigation_session_manager.update_investigation(
+        "replay-test",
+        plan=["revenue_trend"],
+        evidence={"revenue_trend": {"direction": "down"}},
+        claims=[],
+        confidence={},
+        answer="Revenue declined.",
+        question="Why did revenue decline?",
+    )
+
+    latest = investigation_session_manager.get_latest_investigation(
+        "replay-test"
+    )
+
+    assert latest["question"] == "Why did revenue decline?"

@@ -163,3 +163,37 @@ def test_build_evidence_graph_handles_empty_input():
         "nodes": [],
         "edges": [],
     }
+
+def test_build_evidence_graph_resolves_claim_evidence_references():
+    claims = [
+        {
+            "id": "C1",
+            "statement": "South revenue is 120000.",
+            "evidence_refs": [
+                {
+                    "investigation": "regional_performance",
+                    "field": "revenue",
+                    "entity": "South",
+                }
+            ],
+        }
+    ]
+    evidence = {
+        "regional_performance": [
+            {"region": "South", "revenue": 120000}
+        ]
+    }
+
+    graph = build_evidence_graph(claims=claims, evidence=evidence)
+
+    assert any(
+        node["type"] == "evidence"
+        and isinstance(node.get("data"), dict)
+        and node["data"].get("field") == "revenue"
+        for node in graph["nodes"]
+    )
+    assert any(
+        edge["source"] == "C1"
+        and edge["type"] == "supported_by"
+        for edge in graph["edges"]
+    )

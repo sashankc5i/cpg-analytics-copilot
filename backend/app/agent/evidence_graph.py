@@ -37,6 +37,7 @@ def build_evidence_graph(
 
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
+    existing_node_ids: set[str] = set()
 
     # -------------------------------------------------
     # CLAIM NODES
@@ -66,6 +67,7 @@ def build_evidence_graph(
                 "data": claim,
             }
         )
+        existing_node_ids.add(claim_id)
 
     # -------------------------------------------------
     # EVIDENCE NODES
@@ -96,6 +98,65 @@ def build_evidence_graph(
                 "data": evidence_item,
             }
         )
+        existing_node_ids.add(evidence_node_id)
+
+    # -------------------------------------------------
+    # CLAIM → TRACEABLE EVIDENCE REFERENCE EDGES
+    # -------------------------------------------------
+
+    for claim_index, claim in enumerate(claims):
+        claim_id = str(
+            claim.get(
+                "id",
+                f"claim_{claim_index + 1}",
+            )
+        )
+
+        references = claim.get("evidence_refs", [])
+        if not isinstance(references, list):
+            continue
+
+        for reference in references:
+            if not isinstance(reference, dict):
+                continue
+
+            investigation = reference.get("investigation")
+            field = reference.get("field")
+            entity = reference.get("entity")
+
+            if investigation not in evidence or not field:
+                continue
+
+            evidence_id = (
+                f"evidence_ref:{investigation}:{field}:"
+                f"{entity if entity is not None else 'all'}"
+            )
+
+            if evidence_id not in existing_node_ids:
+                source = evidence.get(investigation)
+                nodes.append(
+                    {
+                        "id": evidence_id,
+                        "type": "evidence",
+                        "label": f"{investigation} · {field}"
+                        + (f" · {entity}" if entity is not None else ""),
+                        "data": {
+                            "investigation": investigation,
+                            "field": field,
+                            "entity": entity,
+                            "source": source,
+                        },
+                    }
+                )
+                existing_node_ids.add(evidence_id)
+
+            edges.append(
+                {
+                    "source": claim_id,
+                    "target": evidence_id,
+                    "type": "supported_by",
+                }
+            )
 
     # -------------------------------------------------
     # CLAIM → EVIDENCE EDGES

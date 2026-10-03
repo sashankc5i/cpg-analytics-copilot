@@ -757,7 +757,62 @@ def delete_conversation(
         "deleted": True,
     }
 
+# ---------------------------------------------------------------------------
+# Chat Routing
+# ---------------------------------------------------------------------------
 
+_INVESTIGATION_PATTERNS = (
+    "why is",
+    "why are",
+    "why did",
+    "why has",
+    "why have",
+    "what is driving",
+    "what are driving",
+    "what drove",
+    "what are the drivers",
+    "main drivers",
+    "key drivers",
+    "revenue drivers",
+    "sales drivers",
+    "contributed most",
+    "contributed the most",
+    "contribution",
+    "contributions",
+    "root cause",
+    "root causes",
+    "reason for the change",
+    "reasons for the change",
+    "reason behind",
+    "reasons behind",
+    "explain the change",
+    "explain why",
+    "what caused",
+    "what is causing",
+    "what caused the change",
+    "what is causing the change",
+)
+
+
+def _should_use_investigation(message: str) -> bool:
+    """
+    Determine whether a user question requires multi-dimensional
+    analytical investigation.
+
+    This is intentionally deterministic.
+
+    We do not spend an LLM call just to decide whether another
+    LLM should be called.
+    """
+
+    normalized = " ".join(
+        message.lower().strip().split()
+    )
+
+    return any(
+        pattern in normalized
+        for pattern in _INVESTIGATION_PATTERNS
+    )
 # ---------------------------------------------------------------------------
 # Standard Copilot Chat
 # ---------------------------------------------------------------------------
@@ -774,8 +829,17 @@ def chat(
     """
     Execute a standard Copilot conversation.
 
-    The conversation ID determines which conversational
-    history and analytical context are supplied to the agent.
+    Chat requests are deterministically routed into one of two paths:
+
+    1. Investigation questions
+       -> existing Investigation pipeline
+
+    2. Simple analytical questions
+       -> standard AnalyticsAgent
+
+    This prevents open-ended investigative questions from entering
+    the autonomous LLM -> tool -> LLM -> tool loop used by the
+    legacy Copilot agent.
     """
 
     request_id = getattr(
@@ -807,6 +871,160 @@ def chat(
     )
 
     try:
+        # ---------------------------------------------------------------
+        # Route investigative questions to the dedicated investigation
+        # pipeline instead of the autonomous AnalyticsAgent loop.
+        # ---------------------------------------------------------------
+
+        if _should_use_investigation(request.message):
+            logger.info(
+                "chat_routed_to_investigation | "
+                "request_id=%s | "
+                "conversation_id=%s",
+                request_id,
+                request.conversation_id,
+            )
+
+            investigation = prepare_investigation(
+                question=request.message,
+                investigation_id=request.conversation_id,
+            )
+
+            question = investigation["question"]
+            investigation_history = investigation["history"]
+            plan = investigation["plan"]
+            hypotheses = investigation["hypotheses"]
+            evidence = investigation["evidence"]
+            claims = investigation.get("claims", [])
+            confidence = investigation.get(
+                "confidence",
+                {},
+            )
+            replayed = investigation.get(
+                "replayed",
+                False,
+            )
+
+            evidence_graph = (
+                _build_investigation_evidence_graph(
+                    claims=claims,
+                    evidence=evidence,
+                    hypotheses=hypotheses,
+                    plan=plan,
+                )
+            )
+
+            answer_parts: list[str] = []
+
+            for chunk in stream_synthesis(
+                question,
+                evidence,
+                hypotheses,
+                investigation_history,
+                claims,
+                confidence,
+            ):
+                answer_parts.append(chunk)
+
+            answer = "".join(answer_parts).strip()
+
+            if not answer:
+                raise RuntimeError(
+                    "The investigation returned an empty answer."
+                )
+
+            # -----------------------------------------------------------
+            # Persist investigation state
+            # -----------------------------------------------------------
+
+            investigation_session_manager.add_message(
+                request.conversation_id,
+                {
+                    "role": "user",
+                    "content": request.message,
+                },
+            )
+
+            investigation_session_manager.add_message(
+                request.conversation_id,
+                {
+                    "role": "assistant",
+                    "content": answer,
+                },
+            )
+
+            investigation_session_manager.update_investigation(
+                request.conversation_id,
+                plan=plan,
+                evidence=evidence,
+                claims=claims,
+                confidence=confidence,
+                answer=answer,
+                question=question,
+            )
+
+            # -----------------------------------------------------------
+            # Persist into the normal conversation as well.
+            # -----------------------------------------------------------
+
+            conversation_manager.add_message(
+                request.conversation_id,
+                {
+                    "role": "user",
+                    "content": request.message,
+                },
+            )
+
+            conversation_manager.add_message(
+                request.conversation_id,
+                {
+                    "role": "assistant",
+                    "content": answer,
+                    "claims": claims,
+                    "investigationEvidence": evidence,
+                    "confidence": confidence,
+                    "evidenceGraph": evidence_graph,
+                },
+            )
+
+            logger.info(
+                "chat_investigation_completed | "
+                "request_id=%s | "
+                "conversation_id=%s | "
+                "replayed=%s | "
+                "plan=%s | "
+                "hypotheses=%s | "
+                "claims=%s | "
+                "confidence=%s",
+                request_id,
+                request.conversation_id,
+                replayed,
+                plan,
+                len(hypotheses),
+                len(claims),
+                confidence.get("level"),
+            )
+
+            return {
+                "answer": answer,
+                "tools_used": plan,
+                "tool_results": [],
+                "visualization": None,
+                "conversation_id": request.conversation_id,
+            }
+
+        # ---------------------------------------------------------------
+        # Standard/simple Copilot path
+        # ---------------------------------------------------------------
+
+        logger.info(
+            "chat_routed_to_standard_agent | "
+            "request_id=%s | "
+            "conversation_id=%s",
+            request_id,
+            request.conversation_id,
+        )
+
         result = agent.run(
             user_message=request.message,
             history=history,
@@ -841,8 +1059,11 @@ def chat(
 
         logger.info(
             "chat_completed | "
-            "request_id=%s | tools=%s",
+            "request_id=%s | "
+            "conversation_id=%s | "
+            "tools=%s",
             request_id,
+            request.conversation_id,
             result["tools_used"],
         )
 
@@ -857,7 +1078,8 @@ def chat(
     except ValueError as error:
         logger.warning(
             "chat_validation_error | "
-            "request_id=%s | error=%s",
+            "request_id=%s | "
+            "error=%s",
             request_id,
             error,
         )
@@ -870,7 +1092,8 @@ def chat(
     except RuntimeError as error:
         logger.error(
             "chat_runtime_error | "
-            "request_id=%s | error=%s",
+            "request_id=%s | "
+            "error=%s",
             request_id,
             error,
         )
@@ -951,6 +1174,7 @@ def investigate_stream(
         evidence = investigation["evidence"]
         claims = investigation.get("claims", [])
         confidence = investigation.get("confidence", {})
+        replayed = investigation.get("replayed", False)
 
         evidence_graph = (
             _build_investigation_evidence_graph(
@@ -968,7 +1192,8 @@ def investigate_stream(
                 yield (
                     json.dumps(
                         {
-                            "type": "investigation_started"
+                            "type": "investigation_started",
+                            "replayed": replayed,
                         }
                     )
                     + "\n"
@@ -1093,6 +1318,7 @@ def investigate_stream(
                     claims=claims,
                     confidence=confidence,
                     answer=answer,
+                    question=question,
                 )
 
                 conversation_manager.add_message(

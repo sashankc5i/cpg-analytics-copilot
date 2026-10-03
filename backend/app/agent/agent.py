@@ -232,6 +232,7 @@ class AnalyticsAgent:
     def _call_llm(
         self,
         messages: list,
+        tools_enabled: bool = True,
     ):
         """
         Call the LLM and validate the provider response.
@@ -249,13 +250,19 @@ class AnalyticsAgent:
 
         for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
             try:
+                request_kwargs = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": 0,
+                    "max_completion_tokens": MAX_COMPLETION_TOKENS,
+                }
+
+                if tools_enabled:
+                    request_kwargs["tools"] = TOOL_DEFINITIONS
+                    request_kwargs["tool_choice"] = "auto"
+
                 response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=TOOL_DEFINITIONS,
-                    tool_choice="auto",
-                    temperature=0,
-                    max_completion_tokens=MAX_COMPLETION_TOKENS,
+                    **request_kwargs
                 )
 
                 usage = getattr(response, "usage", None)
@@ -577,6 +584,12 @@ class AnalyticsAgent:
 
         tools_used = []
         tool_results = []
+        executed_tool_results = {}
+
+        # Stop evidence collection when the model repeats an identical
+        # analytical tool request instead of spending another LLM call
+        # deciding what to do next.
+        duplicate_tool_detected = False
 
         for iteration in range(
             MAX_TOOL_ITERATIONS
@@ -628,6 +641,8 @@ class AnalyticsAgent:
                 )
 
                 tool_start = time.perf_counter()
+                execution_key = None
+                tool_was_executed = False
 
                 try:
                     arguments = json.loads(
@@ -635,34 +650,66 @@ class AnalyticsAgent:
                         or "{}"
                     )
 
-                    result = execute_tool_as_json(
+                    execution_key = (
                         tool_name,
-                        arguments,
+                        json.dumps(
+                            arguments,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            default=str,
+                        ),
                     )
 
-                    tool_duration_ms = round(
-                        (time.perf_counter() - tool_start) * 1000,
-                        2,
-                    )
+                    if execution_key in executed_tool_results:
+                        result = executed_tool_results[execution_key]
+                        duplicate_tool_detected = True
 
-                    record_tool_execution(
-                        tool=tool_name,
-                        duration_ms=tool_duration_ms,
-                        success=True,
-                    )
+                        logger.warning(
+                            "agent_duplicate_tool_request_detected | "
+                            "tool=%s | "
+                            "iteration=%s",
+                            tool_name,
+                            iteration + 1,
+                        )
 
-                    # OBS-005:
-                    # Emit a structured operational event separately from
-                    # the request-level telemetry record.
-                    #
-                    # Do not log tool arguments or tool results here.
-                    log_event(
-                        logger,
-                        "tool_execution_completed",
-                        tool=tool_name,
-                        duration_ms=tool_duration_ms,
-                        success=True,
-                    )
+                        log_event(
+                            logger,
+                            "tool_execution_reused",
+                            tool=tool_name,
+                            success=True,
+                        )
+                    else:
+                        result = execute_tool_as_json(
+                            tool_name,
+                            arguments,
+                        )
+
+                        executed_tool_results[execution_key] = result
+                        tool_was_executed = True
+
+                        tool_duration_ms = round(
+                            (time.perf_counter() - tool_start) * 1000,
+                            2,
+                        )
+
+                        record_tool_execution(
+                            tool=tool_name,
+                            duration_ms=tool_duration_ms,
+                            success=True,
+                        )
+
+                        # OBS-005:
+                        # Emit a structured operational event separately from
+                        # the request-level telemetry record.
+                        #
+                        # Do not log tool arguments or tool results here.
+                        log_event(
+                            logger,
+                            "tool_execution_completed",
+                            tool=tool_name,
+                            duration_ms=tool_duration_ms,
+                            success=True,
+                        )
 
                     # Update context only after the tool has successfully
                     # executed. This prevents failed tool calls from
@@ -675,9 +722,10 @@ class AnalyticsAgent:
                         )
                     )
 
-                    tools_used.append(
-                        tool_name
-                    )
+                    if tool_was_executed:
+                        tools_used.append(
+                            tool_name
+                        )
 
                     try:
                         parsed_result = (
@@ -739,6 +787,8 @@ class AnalyticsAgent:
                             "error": str(error)
                         }
                     )
+                    if execution_key is not None:
+                        executed_tool_results[execution_key] = result
 
                     tool_results.append(
                         {
@@ -760,18 +810,104 @@ class AnalyticsAgent:
                     }
                 )
 
-        logger.error(
-            "agent_max_tool_iterations_exceeded | "
+            if duplicate_tool_detected:
+                logger.warning(
+                    "agent_stopping_after_duplicate_tool_request | "
+                    "model=%s | "
+                    "iteration=%s | "
+                    "tools_used=%s",
+                    self.model,
+                    iteration + 1,
+                    len(tools_used),
+                )
+                break
+
+        logger.warning(
+            "agent_tool_collection_stopped | "
             "model=%s | "
-            "max_iterations=%s",
+            "max_iterations=%s | "
+            "duplicate_tool_detected=%s | "
+            "tools_used=%s",
             self.model,
             MAX_TOOL_ITERATIONS,
+            duplicate_tool_detected,
+            len(tools_used),
         )
 
-        raise RuntimeError(
-            "Agent exceeded maximum "
-            "tool-calling iterations."
+        # Do not turn a controlled investigation boundary into an HTTP 500.
+        # Ask the model for one final synthesis with tool calling disabled so
+        # it must work from the evidence already collected.
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "The investigation evidence-collection limit has been "
+                    "reached. Do not call any more tools. Synthesize the "
+                    "best possible answer using only the evidence already "
+                    "returned in this conversation. Clearly state any "
+                    "limitations or evidence gaps. Do not invent facts."
+                ),
+            }
         )
+
+        try:
+            final_message = self._call_llm(
+                messages,
+                tools_enabled=False,
+            )
+
+            if getattr(final_message, "tool_calls", None):
+                logger.error(
+                    "agent_final_synthesis_requested_tools | model=%s",
+                    self.model,
+                )
+                raise RuntimeError(
+                    "The analytics model could not complete the investigation "
+                    "within the allowed evidence limit."
+                )
+
+            answer = self._validate_final_answer(final_message)
+            messages.append(final_message)
+        except Exception as error:
+            # The evidence collected so far is still valid even if the
+            # provider cannot perform the final synthesis call.
+            #
+            # Do not convert a controlled tool-iteration boundary or a
+            # transient provider failure into an HTTP 500.
+            logger.warning(
+                "agent_final_synthesis_failed | "
+                "model=%s | error_type=%s | reason=%s",
+                self.model,
+                type(error).__name__,
+                str(error),
+            )
+
+            answer = (
+                "I collected the available analytical evidence, but I "
+                "could not complete the final narrative synthesis right now. "
+                "The available evidence can still be reviewed from the "
+                "successful tool results."
+            )
+
+        logger.info(
+            "agent_completed_with_evidence_limit | "
+            "model=%s | tools_used=%s | synthesis_fallback=%s",
+            self.model,
+            len(tools_used),
+            not bool(
+                messages
+                and messages[-1] is not None
+                and getattr(messages[-1], "role", None) == "assistant"
+            ),
+        )
+
+        return {
+            "answer": answer,
+            "tools_used": tools_used,
+            "tool_results": tool_results,
+            "messages": messages,
+            "analytical_context": working_context,
+        }
 
 
 agent = AnalyticsAgent()
