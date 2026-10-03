@@ -5,13 +5,25 @@ from app.database.repositories.sales_repository import (
 )
 
 
-def get_overall_sales():
-    return get_overall_sales_data()
+def get_overall_sales(
+    filters: dict | None = None,
+):
+    return get_overall_sales_data(
+        filters=filters
+    )
 
 
-def get_sales_by_region():
-    return get_sales_by_region_data()
+def get_sales_by_region(
+    filters: dict | None = None,
+):
+    return get_sales_by_region_data(
+        filters=filters
+    )
 
 
-def get_monthly_sales_trend():
-    return get_monthly_sales_trend_data()
+def get_monthly_sales_trend(
+    filters: dict | None = None,
+):
+    return get_monthly_sales_trend_data(
+        filters=filters
+    )

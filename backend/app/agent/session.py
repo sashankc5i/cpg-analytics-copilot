@@ -17,6 +17,29 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _build_analytical_context() -> dict[str, Any]:
+    """
+    Create the default analytical context for a conversation.
+
+    Analytical context stores structured analytical state that can
+    be reused across conversational turns without replaying the
+    entire conversation history to the LLM.
+    """
+
+    return {
+        "metric": None,
+        "filters": {},
+        "date_range": {
+            "start_date": None,
+            "end_date": None,
+        },
+        "comparison_period": None,
+        "selected_entity": None,
+        "active_investigation": None,
+        "last_tool": None,
+    }
+
+
 def _build_session(
     conversation_id: str,
     title: str = "New Chat",
@@ -34,6 +57,7 @@ def _build_session(
         "updated_at": now,
         "archived": False,
         "history": [],
+        "analytical_context": _build_analytical_context(),
     }
 
 
@@ -46,6 +70,11 @@ class ConversationManager:
     - conversation metadata
     - message history
     - archive state
+    - analytical context
+
+    Analytical context stores structured state such as the
+    currently active metric, filters, date range, selected
+    entity, investigation state, and last executed tool.
 
     The manager remains in-memory for the current
     development phase. Persistent storage can be
@@ -164,7 +193,9 @@ class ConversationManager:
         """
         Return lightweight conversation metadata.
 
-        Full message history is intentionally excluded.
+        Full message history and analytical context are
+        intentionally excluded.
+
         The sidebar only needs conversation metadata.
 
         A new list containing new metadata dictionaries is
@@ -336,6 +367,71 @@ class ConversationManager:
         session["updated_at"] = _utc_now()
 
     # ============================================================
+    # Analytical context management
+    # ============================================================
+
+    def get_analytical_context(
+        self,
+        conversation_id: str,
+    ) -> dict[str, Any]:
+        """
+        Return a defensive copy of the analytical context.
+
+        Analytical context describes the current analytical
+        scope of the conversation independently from the
+        conversational message history.
+        """
+
+        session = self.get_session(
+            conversation_id
+        )
+
+        return deepcopy(
+            session["analytical_context"]
+        )
+
+    def update_analytical_context(
+        self,
+        conversation_id: str,
+        context: dict[str, Any],
+    ):
+        """
+        Replace the analytical context for a conversation.
+
+        A defensive copy is stored so callers cannot mutate
+        internal conversation state after the update.
+        """
+
+        session = self.get_session(
+            conversation_id
+        )
+
+        session["analytical_context"] = deepcopy(
+            context
+        )
+
+        session["updated_at"] = _utc_now()
+
+    def clear_analytical_context(
+        self,
+        conversation_id: str,
+    ):
+        """
+        Reset analytical context while preserving conversation
+        history and conversation metadata.
+        """
+
+        session = self.get_session(
+            conversation_id
+        )
+
+        session["analytical_context"] = (
+            _build_analytical_context()
+        )
+
+        session["updated_at"] = _utc_now()
+
+    # ============================================================
     # Conversation retrieval
     # ============================================================
 
@@ -345,7 +441,7 @@ class ConversationManager:
     ) -> dict[str, Any]:
         """
         Return a defensive copy of the complete conversation,
-        including message history.
+        including message history and analytical context.
 
         The returned object can safely be modified by callers
         without mutating the manager's internal state.
@@ -370,6 +466,9 @@ class ConversationManager:
     ):
         """
         Reset a conversation while preserving its ID.
+
+        Both conversational history and analytical context
+        are reset.
         """
 
         session = self.get_session(
@@ -379,6 +478,9 @@ class ConversationManager:
         session["history"] = []
         session["title"] = "New Chat"
         session["archived"] = False
+        session["analytical_context"] = (
+            _build_analytical_context()
+        )
         session["updated_at"] = _utc_now()
 
 

@@ -6,9 +6,19 @@ from app.database.repositories.sales_repository import (
 )
 
 
-def get_top_products(limit: int = 10):
-    return get_top_products_data(limit=limit)
+def get_top_products(
+    limit: int = 10,
+    filters: dict | None = None,
+):
+    return get_top_products_data(
+        limit=limit,
+        filters=filters,
+    )
 
 
-def get_sales_by_category():
-    return get_sales_by_category_data()
+def get_sales_by_category(
+    filters: dict | None = None,
+):
+    return get_sales_by_category_data(
+        filters=filters
+    )

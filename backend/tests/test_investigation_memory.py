@@ -238,11 +238,13 @@ def test_chat_and_investigation_share_conversation_id(
     def fake_agent_run(
         user_message,
         history=None,
+        analytical_context=None,
     ):
         return {
             "answer": "Revenue is stable.",
             "tools_used": [],
             "tool_results": [],
+            "analytical_context": analytical_context,
         }
 
     def fake_prepare_investigation(

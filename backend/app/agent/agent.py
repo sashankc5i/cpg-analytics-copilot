@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import time
+from copy import deepcopy
 
 from groq import Groq
 from groq import RateLimitError
@@ -12,6 +13,7 @@ from app.agent.tools import (
     execute_tool_as_json,
 )
 from app.config import get_settings
+from app.agent.session import conversation_manager
 
 
 settings = get_settings()
@@ -62,6 +64,7 @@ def _retry_delay_from_error(error: RateLimitError) -> float:
 
     if headers:
         retry_after = headers.get("retry-after")
+
         if retry_after:
             try:
                 return min(
@@ -72,6 +75,100 @@ def _retry_delay_from_error(error: RateLimitError) -> float:
                 pass
 
     return DEFAULT_RETRY_DELAY_SECONDS
+
+
+def _build_analytical_context_message(
+    analytical_context: dict | None,
+) -> dict | None:
+    """
+    Build a compact system message containing the current analytical context.
+
+    The context is intentionally small and structured so that follow-up
+    questions can reuse successful filters without replaying large amounts
+    of conversational history.
+    """
+
+    if not analytical_context:
+        return None
+
+    context = {
+        "metric": analytical_context.get("metric"),
+        "filters": analytical_context.get("filters", {}),
+        "date_range": analytical_context.get(
+            "date_range",
+            {
+                "start_date": None,
+                "end_date": None,
+            },
+        ),
+        "comparison_period": analytical_context.get(
+            "comparison_period"
+        ),
+        "selected_entity": analytical_context.get(
+            "selected_entity"
+        ),
+        "active_investigation": analytical_context.get(
+            "active_investigation"
+        ),
+        "last_tool": analytical_context.get("last_tool"),
+    }
+
+    return {
+        "role": "system",
+        "content": (
+            "CURRENT ANALYTICAL CONTEXT:\n"
+            f"{json.dumps(context, separators=(',', ':'))}\n\n"
+            "Use this context to resolve follow-up analytical questions. "
+            "Preserve existing filters when the user does not explicitly "
+            "change them. If the user explicitly changes a filter, use the "
+            "new value instead. Do not invent values that are not present "
+            "in the context."
+        ),
+    }
+
+
+def _update_analytical_context_from_tool(
+    context: dict,
+    tool_name: str,
+    arguments: dict,
+) -> dict:
+    """
+    Update analytical context only from a successfully executed tool call.
+
+    The LLM does not directly control this state. Context is derived from
+    validated tool arguments instead.
+    """
+
+    updated_context = deepcopy(context)
+
+    filters = arguments.get("filters") or {}
+
+    if filters:
+        existing_filters = updated_context.setdefault(
+            "filters",
+            {},
+        )
+
+        for key, value in filters.items():
+            existing_filters[key] = value
+
+        date_range = updated_context.setdefault(
+            "date_range",
+            {
+                "start_date": None,
+                "end_date": None,
+            },
+        )
+
+        if "start_date" in filters:
+            date_range["start_date"] = filters["start_date"]
+
+        if "end_date" in filters:
+            date_range["end_date"] = filters["end_date"]
+
+    updated_context["last_tool"] = tool_name
+
+    return updated_context
 
 
 class AnalyticsAgent:
@@ -252,10 +349,41 @@ class AnalyticsAgent:
         self,
         user_message: str,
         history: list | None = None,
+        analytical_context: dict | None = None,
     ):
+        """
+        Run the analytics agent.
+
+        analytical_context contains structured state from previously
+        successful analytical tool executions. It is used to resolve
+        follow-up questions without relying entirely on raw conversation
+        history.
+
+        Context is maintained locally during the request and returned to
+        the caller. The caller is responsible for persisting it.
+        """
+
         logger.info(
             "agent_started | model=%s",
             self.model,
+        )
+
+        # Work on a request-local copy so a failed tool execution cannot
+        # accidentally mutate the persisted conversation context.
+        working_context = deepcopy(
+            analytical_context
+            or {
+                "metric": None,
+                "filters": {},
+                "date_range": {
+                    "start_date": None,
+                    "end_date": None,
+                },
+                "comparison_period": None,
+                "selected_entity": None,
+                "active_investigation": None,
+                "last_tool": None,
+            }
         )
 
         messages = [
@@ -264,6 +392,13 @@ class AnalyticsAgent:
                 "content": SYSTEM_PROMPT,
             }
         ]
+
+        context_message = _build_analytical_context_message(
+            working_context
+        )
+
+        if context_message:
+            messages.append(context_message)
 
         if history:
             messages.extend(history)
@@ -309,6 +444,7 @@ class AnalyticsAgent:
                     "tools_used": tools_used,
                     "tool_results": tool_results,
                     "messages": messages,
+                    "analytical_context": working_context,
                 }
 
             for tool_call in (
@@ -335,6 +471,17 @@ class AnalyticsAgent:
                     result = execute_tool_as_json(
                         tool_name,
                         arguments,
+                    )
+
+                    # Update context only after the tool has successfully
+                    # executed. This prevents failed tool calls from
+                    # polluting the analytical state.
+                    working_context = (
+                        _update_analytical_context_from_tool(
+                            context=working_context,
+                            tool_name=tool_name,
+                            arguments=arguments,
+                        )
                     )
 
                     tools_used.append(

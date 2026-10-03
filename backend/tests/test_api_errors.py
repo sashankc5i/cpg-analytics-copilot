@@ -1,6 +1,5 @@
 import json
 
-
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -19,7 +18,11 @@ def setup_function():
 
 
 def test_chat_runtime_error_returns_safe_response(monkeypatch):
-    def failing_agent_run(user_message, history=None):
+    def failing_agent_run(
+        user_message,
+        history=None,
+        analytical_context=None,
+    ):
         raise RuntimeError(
             "Sensitive provider failure: GROQ_SECRET_INTERNAL_DETAIL"
         )
@@ -49,7 +52,11 @@ def test_chat_runtime_error_returns_safe_response(monkeypatch):
 
 
 def test_chat_unexpected_error_returns_safe_response(monkeypatch):
-    def failing_agent_run(user_message, history=None):
+    def failing_agent_run(
+        user_message,
+        history=None,
+        analytical_context=None,
+    ):
         raise Exception(
             "Sensitive unexpected failure: INTERNAL_STACK_DETAIL"
         )
@@ -100,7 +107,7 @@ def test_readiness_failure_returns_safe_response(monkeypatch):
 
 def _read_ndjson(response):
     return [
-        __import__("json").loads(line)
+        json.loads(line)
         for line in response.text.splitlines()
         if line.strip()
     ]
@@ -184,7 +191,9 @@ def test_challenge_stream_failure_returns_safe_error(monkeypatch):
     def fake_prepare_challenge(investigation_id):
         return {
             "question": "Why did revenue decline?",
-            "original_answer": "Revenue declined in the latest period.",
+            "original_answer": (
+                "Revenue declined in the latest period."
+            ),
             "claims": [],
             "challenge_plan": [],
             "challenge_evidence": [],
@@ -247,7 +256,10 @@ def test_challenge_stream_failure_returns_safe_error(monkeypatch):
         not in response.text
     )
 
-def test_investigation_start_failure_returns_safe_response(monkeypatch):
+
+def test_investigation_start_failure_returns_safe_response(
+    monkeypatch,
+):
     def failing_prepare(*args, **kwargs):
         raise RuntimeError(
             "Sensitive preparation failure: INTERNAL_PREP_DETAIL"

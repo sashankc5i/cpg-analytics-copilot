@@ -17,14 +17,29 @@ def test_chat_creates_and_updates_conversation_history(
     def fake_agent_run(
         user_message,
         history=None,
+        analytical_context=None,
     ):
         assert user_message == "What is our revenue trend?"
         assert history == []
+
+        assert analytical_context == {
+            "metric": None,
+            "filters": {},
+            "date_range": {
+                "start_date": None,
+                "end_date": None,
+            },
+            "comparison_period": None,
+            "selected_entity": None,
+            "active_investigation": None,
+            "last_tool": None,
+        }
 
         return {
             "answer": "Revenue is relatively stable.",
             "tools_used": ["get_monthly_sales_trend"],
             "tool_results": [],
+            "analytical_context": analytical_context,
         }
 
     monkeypatch.setattr(
@@ -90,19 +105,24 @@ def test_chat_reuses_existing_conversation_history(
     )
 
     captured_history = None
+    captured_context = None
 
     def fake_agent_run(
         user_message,
         history=None,
+        analytical_context=None,
     ):
         nonlocal captured_history
+        nonlocal captured_context
 
         captured_history = list(history)
+        captured_context = dict(analytical_context)
 
         return {
             "answer": "The latest trend is stable.",
             "tools_used": [],
             "tool_results": [],
+            "analytical_context": analytical_context,
         }
 
     monkeypatch.setattr(
@@ -130,6 +150,19 @@ def test_chat_reuses_existing_conversation_history(
             "content": "Revenue declined slightly last month.",
         },
     ]
+
+    assert captured_context == {
+        "metric": None,
+        "filters": {},
+        "date_range": {
+            "start_date": None,
+            "end_date": None,
+        },
+        "comparison_period": None,
+        "selected_entity": None,
+        "active_investigation": None,
+        "last_tool": None,
+    }
 
     conversation = conversation_manager.get_conversation(
         "chat-test-2"
@@ -170,11 +203,13 @@ def test_chat_updates_conversation_timestamp(
     def fake_agent_run(
         user_message,
         history=None,
+        analytical_context=None,
     ):
         return {
             "answer": "Test response.",
             "tools_used": [],
             "tool_results": [],
+            "analytical_context": analytical_context,
         }
 
     monkeypatch.setattr(
@@ -205,11 +240,13 @@ def test_different_conversations_have_independent_history(
     def fake_agent_run(
         user_message,
         history=None,
+        analytical_context=None,
     ):
         return {
             "answer": f"Response to: {user_message}",
             "tools_used": [],
             "tool_results": [],
+            "analytical_context": analytical_context,
         }
 
     monkeypatch.setattr(

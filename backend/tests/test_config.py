@@ -21,7 +21,7 @@ def test_settings_loads_required_and_default_values(
     assert settings.groq_model == "openai/gpt-oss-20b"
     assert settings.max_tool_iterations == 8
     assert settings.app_name == "CPG Analytics Copilot"
-    assert settings.app_version == "0.1.0"
+    assert settings.app_version == "0.2.0"
 
     assert settings.cors_origin_list == [
         "http://localhost:5173",

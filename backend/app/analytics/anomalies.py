@@ -107,8 +107,23 @@ def detect_revenue_anomalies(
     return anomalies
 
 
-def get_revenue_anomalies() -> list[dict]:
-    monthly_revenue = get_monthly_revenue_data()
+def get_revenue_anomalies(
+    filters: dict | None = None,
+) -> list[dict]:
+
+    monthly_trend = get_monthly_sales_trend_data(
+        filters=filters
+    )
+
+    monthly_revenue = [
+        {
+            "period": row["month"],
+            "actual_revenue": float(
+                row["revenue"] or 0
+            ),
+        }
+        for row in monthly_trend
+    ]
 
     return detect_revenue_anomalies(
         monthly_revenue

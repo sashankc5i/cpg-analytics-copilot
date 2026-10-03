@@ -3,5 +3,9 @@ from app.database.repositories.promotion_repository import (
 )
 
 
-def get_promotion_impact():
-    return get_promotion_impact_data()
+def get_promotion_impact(
+    filters: dict | None = None,
+):
+    return get_promotion_impact_data(
+        filters=filters
+    )

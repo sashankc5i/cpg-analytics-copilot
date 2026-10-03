@@ -775,7 +775,7 @@ def chat(
     Execute a standard Copilot conversation.
 
     The conversation ID determines which conversational
-    history is supplied to the agent.
+    history and analytical context are supplied to the agent.
     """
 
     request_id = getattr(
@@ -800,15 +800,27 @@ def chat(
         request.conversation_id
     )
 
+    analytical_context = (
+        conversation_manager.get_analytical_context(
+            request.conversation_id
+        )
+    )
+
     try:
         result = agent.run(
             user_message=request.message,
             history=history,
+            analytical_context=analytical_context,
         )
 
         visualization = build_visualization(
             tools_used=result["tools_used"],
             tool_results=result["tool_results"],
+        )
+
+        conversation_manager.update_analytical_context(
+            request.conversation_id,
+            result["analytical_context"],
         )
 
         conversation_manager.add_message(
@@ -888,7 +900,6 @@ def chat(
                 "request_id": request_id,
             },
         )
-
 
 # ---------------------------------------------------------------------------
 # Investigation Mode
