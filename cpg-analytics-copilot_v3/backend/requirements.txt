@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+pandas
+numpy
+sqlalchemy
+groq
+pyjwt[crypto]
+python-dotenv
+httpx
+jsonschema
+pytest
+# Optional: pyodbc  (only for Azure SQL via ANALYTICS_DB_URL=mssql+pyodbc://...)
