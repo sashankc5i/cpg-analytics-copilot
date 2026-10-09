@@ -1,3 +1,6 @@
+
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -11,11 +14,19 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
 
 
+class Visualization(BaseModel):
+    type: str
+    title: str | None = None
+    x: list[Any] = Field(default_factory=list)
+    y: list[Any] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     answer: str
     conversation_id: str
     tools_used: list[str] = Field(default_factory=list)
     tool_results: list[dict] = Field(default_factory=list)
+    visualization: Visualization | dict[str, Any] | None = None
 
 
 class ConversationCreateRequest(BaseModel):

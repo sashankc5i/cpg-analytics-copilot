@@ -44,6 +44,48 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 
+# Local-prototype cache: keep the latest structured analytical result per
+# conversation so a follow-up such as "visualize the same data" can reuse it
+# without asking the LLM to recreate values as text. Production deployments
+# should move this state into the application's durable conversation store.
+_LATEST_ANALYTICS_BY_CONVERSATION: dict[str, dict[str, object]] = {}
+
+
+def _is_visualization_request(message: str) -> bool:
+    """Identify chart-only follow-ups that should reuse the previous result.
+
+    Explicit requests for a different subject (for example, "chart revenue by
+    region") must still go through the analytics agent rather than reuse stale
+    chart data from the previous turn.
+    """
+    normalized = " ".join(message.lower().strip().split())
+    visualization_terms = (
+        "visualization", "visualisation", "visualize", "visualise",
+        "chart", "graph", "plot",
+    )
+    if not any(term in normalized for term in visualization_terms):
+        return False
+
+    same_result_phrases = (
+        "same data", "same result", "same as", "data above", "result above",
+        "previous result", "previous data", "this data", "this result",
+        "proper bar chart", "proper chart", "as a bar chart", "as a line chart",
+        "visualization of the same", "visualisation of the same",
+    )
+    if any(phrase in normalized for phrase in same_result_phrases):
+        return True
+
+    # Short, subject-free requests like "show me a visualization" are chart
+    # follow-ups. If a business dimension is named, run the normal agent path.
+    subject_terms = (
+        "revenue", "sales", "region", "regional", "product", "category",
+        "segment", "customer", "promotion", "inventory", "stockout", "month",
+    )
+    return len(normalized.split()) <= 6 and not any(
+        term in normalized for term in subject_terms
+    )
+
+
 app = FastAPI(
     title=settings.app_name,
     description="Enterprise Data Analytics Copilot for CPG",
@@ -453,6 +495,10 @@ def delete_conversation(
             conversation_id
         )
     )
+    _LATEST_ANALYTICS_BY_CONVERSATION.pop(
+        conversation_id,
+        None,
+    )
 
     logger.info(
         "conversation_deleted | "
@@ -506,6 +552,45 @@ def chat(
     )
 
     try:
+        # A chart follow-up should render the previous deterministic result,
+        # not ask the LLM to draw an ASCII chart in its prose response.
+        cached = _LATEST_ANALYTICS_BY_CONVERSATION.get(
+            request.conversation_id
+        )
+        if _is_visualization_request(request.message) and cached:
+            cached_visualization = cached.get("visualization")
+            if not isinstance(cached_visualization, dict):
+                cached_visualization = build_visualization(
+                    tools_used=cached.get("tools_used", []),
+                    tool_results=cached.get("tool_results", []),
+                )
+
+            if isinstance(cached_visualization, dict):
+                answer = (
+                    f"Here is a chart of the same data: "
+                    f"{cached_visualization.get('title', 'Analytics Results')}."
+                )
+                conversation_manager.add_message(
+                    request.conversation_id,
+                    {"role": "user", "content": request.message},
+                )
+                conversation_manager.add_message(
+                    request.conversation_id,
+                    {"role": "assistant", "content": answer},
+                )
+                logger.info(
+                    "chat_visualization_reused | request_id=%s | conversation_id=%s",
+                    request_id,
+                    request.conversation_id,
+                )
+                return {
+                    "answer": answer,
+                    "tools_used": [],
+                    "tool_results": [],
+                    "visualization": cached_visualization,
+                    "conversation_id": request.conversation_id,
+                }
+
         result = agent.run(
             user_message=request.message,
             history=history,
@@ -515,6 +600,15 @@ def chat(
             tools_used=result["tools_used"],
             tool_results=result["tool_results"],
         )
+
+        # Keep the latest usable structured result, even if its visualization
+        # needs to be built on a subsequent chart request.
+        if result.get("tool_results"):
+            _LATEST_ANALYTICS_BY_CONVERSATION[request.conversation_id] = {
+                "tools_used": result.get("tools_used", []),
+                "tool_results": result.get("tool_results", []),
+                "visualization": visualization,
+            }
 
         conversation_manager.add_message(
             request.conversation_id,
