@@ -92,10 +92,10 @@ Interactive docs: `/docs` (FastAPI Swagger) when the backend runs.
 
 ## Example
 ```bash
-TOKEN=$(curl -s localhost:8000/api/auth/login -H 'content-type: application/json' \
+TOKEN=$(curl -s localhost:8010/api/auth/login -H 'content-type: application/json' \
   -d '{"username":"analyst","password":"demo123"}' | jq -r .token)
 
-curl -s localhost:8000/api/tools/compare_periods -H "Authorization: Bearer $TOKEN" \
+curl -s localhost:8010/api/tools/compare_periods -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
   -d '{"metric":"revenue","period":"last_4_weeks","group_by":["region"]}'
 ```

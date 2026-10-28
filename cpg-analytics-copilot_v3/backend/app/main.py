@@ -2,10 +2,11 @@ import logging
 import threading
 import time
 import uuid
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,8 +16,11 @@ from . import db, governance, logging_setup, memory, security, seed
 from .config import ROOT, settings
 from .logging_setup import log, request_id_var
 from .routes import api
+from .document_routes import router as document_router
+from .admin_routes import router as admin_router
 
 logging_setup.setup()
+_http_metrics = defaultdict(lambda: {"count": 0, "duration_seconds": 0.0})
 
 
 def _radar_loop():
@@ -56,6 +60,11 @@ async def request_context(request: Request, call_next):
         log("http", logging.ERROR, "unhandled error", path=request.url.path, error=repr(e))
         resp = JSONResponse({"error": "An internal error occurred.", "request_id": rid}, status_code=500)
     resp.headers["X-Request-ID"] = rid
+    route = request.scope.get("route")
+    label = getattr(route, "path", request.url.path)
+    metric = _http_metrics[(request.method, label, str(resp.status_code))]
+    metric["count"] += 1
+    metric["duration_seconds"] += time.time() - t0
     if request.url.path.startswith("/api"):
         log("http", logging.INFO, "request", method=request.method, path=request.url.path, status=resp.status_code, ms=round((time.time() - t0) * 1000))
     request_id_var.reset(tok)
@@ -73,6 +82,25 @@ async def val_exc(request, exc):
 
 
 app.include_router(api)
+app.include_router(document_router)
+app.include_router(admin_router)
+
+
+def metrics_text():
+    lines = ["# HELP http_requests_total Total HTTP requests.", "# TYPE http_requests_total counter",
+             "# HELP http_request_duration_seconds_sum Total HTTP request duration in seconds.", "# TYPE http_request_duration_seconds_sum counter"]
+    for (method, path, status), values in sorted(_http_metrics.items()):
+        labels = f'method="{method}",path="{path}",status="{status}"'
+        lines.extend((f"http_requests_total{{{labels}}} {values['count']}", f"http_request_duration_seconds_sum{{{labels}}} {values['duration_seconds']:.6f}"))
+    return "\n".join(lines) + "\n"
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics(user=Depends(security.require("user_admin"))):
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(metrics_text(), media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
 DIST = ROOT.parent / "frontend" / "dist"
 if DIST.exists():  # single-process deployment: serve the built React app
     app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")

@@ -4,6 +4,19 @@ React + FastAPI implementation of your *CPG Analytics Copilot – Comprehensive 
 
 **Design principle (TRU-007/008):** the LLM interprets intent and narrates; it never writes SQL and never computes numbers. All figures come from governed, schema-validated, role-checked, row-level-secured analytics tools whose results are stored as numbered evidence (`[E1]`, `[E2]`…). A grounding check flags any number in an answer that cannot be found in tool evidence.
 
+## Chat, document Library, and test questions
+
+Use the paperclip beside the chat input to upload a PDF. The uploaded file appears as a selected chip above the prompt. The **Library** tab lists saved uploads, lets signed-in users preview the original PDF, and attach a stored file to a chat. When a document is attached, the assistant automatically includes governed CPG evidence when available and returns a structured comparison report with `[DocID:...]` and `[E#]` citations, source-selection reasoning, and date/definition limitations. Without an attachment, chat remains CPG-data-only. Every turn is saved in conversation history.
+
+Upload `frontend/public/sample-documents/north-region-campaign-review.pdf` to try document questions:
+
+- **CPG only:** "Compare South beverage revenue with the prior period."
+- **CPG only:** "Which region had the highest net revenue in the last four weeks?"
+- **Document + CPG report:** "What were North campaign net revenue and gross margin?"
+- **Document + CPG report:** "Which featured product sold the most units, and how many?"
+- **Document + CPG report:** "What action was assigned to Field sales and by when?"
+- **Compare both:** "Compare the report's North revenue with CPG data. Explain the values and date coverage."
+
 ## Quick start
 
 ```bash
@@ -12,15 +25,15 @@ cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # add GROQ_API_KEY=...  (optional, see below)
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8010
 
 # Frontend (Node 18+)
 cd ../frontend
 npm install
-npm run dev                   # http://localhost:5173 (proxies /api to :8000)
+npm run dev                   # http://localhost:5175 (proxies /api to :8010)
 ```
 
-Single-process alternative: run `npm run build` in `frontend/`, then run only the backend; it serves the built app at http://localhost:8000.
+Single-process alternative: run `npm run build` in `frontend/`, then run only the backend; it serves the built app at http://localhost:8010.
 
 The first start creates a synthetic CPG warehouse (`backend/data/cpg.db`, ~75k weekly sales rows over 2 years) with embedded storylines so investigations have real signal to find:
 South beverage stockouts, an ended Salt & Co promo with post-promo dip, a Sparkle Detergent price rise, a Personal Care competitor spike, Crunch Bites cannibalising Crunch Minis, and planted data-quality problems (missing rows, null discounts, a stale inventory feed).
@@ -40,16 +53,20 @@ React (Vite)  ->  FastAPI  ->  Agent (Groq tool-calling loop | offline planner)
                                     v                      pandas calculations
                                Evidence store (SQL, lineage, freshness, DQ, policy per result)
  Investigation engine: plan -> hypotheses -> deterministic tests -> challenge -> confidence -> claims-to-evidence
- State (SQLite): conversations, evidence, investigations, memory, audit, telemetry, metric catalog
+State (SQLite): conversations, evidence, investigations, memory, audit, telemetry, metric catalog, knowledge documents, evaluations
 ```
 
-Backend modules: `analytics/` (core periods + SQL builder, performance, commercial, ops, pulse), `tools.py`, `agent.py`, `investigation.py`, `memory.py`, `security.py`, `governance.py`, `routes.py`.
+Backend modules: `analytics/` (core periods + SQL builder, performance, commercial, ops, pulse), `tools.py`, `agent.py`, `investigation.py`, `memory.py`, `security.py`, `governance.py`, `routes.py`, `document_processing.py`, `document_routes.py`, and `admin_routes.py`.
+
+Document chat, admin endpoints, PDF/OCR dependencies, source selection, and their request/response formats are documented in [`backend/DOCUMENT_CHAT_ADMIN.md`](backend/DOCUMENT_CHAT_ADMIN.md). Install the added backend requirements with `pip install -r backend/requirements.txt` from the project root (or `pip install -r requirements.txt` from `backend/`).
+
+The chat composer supports shared PDF uploads and includes three fictional PDFs for trying cited document chat. Every signed-in user can view documents uploaded by other users. Admins can inspect application records and read-only tables from `backend/data/cpg.db` in **Operations → Database records**.
 
 ## Feature coverage
 
 | IDs | Where / how |
 |---|---|
-| CON-001…003 | `agent.py`: NL questions, multi-turn history, retained context (metric/period/filters/tool) so "and for North?" re-runs the prior analysis |
+| CON-001…003 | `agent.py`: NL questions, multi-turn history, retained context (metric/period/filters/tool) so "and for North"" re-runs the prior analysis |
 | CON-004 | `request_clarification` tool, shown as tappable option chips |
 | CON-005, 007, 008, 009 | Searchable history; rename/archive/restore; delete cascades to messages, evidence and linked investigations; export conversation (md/json) and investigation (md/html/json) |
 | CON-006 | Starter suggestions (from the radar) plus evidence-aware follow-ups after each answer |

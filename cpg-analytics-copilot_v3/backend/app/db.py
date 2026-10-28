@@ -94,6 +94,11 @@ CREATE TABLE IF NOT EXISTS metric_defs(key TEXT PRIMARY KEY, name TEXT, descript
 CREATE TABLE IF NOT EXISTS metric_history(id TEXT PRIMARY KEY, key TEXT, version INTEGER, description TEXT, status TEXT, changed_by TEXT, ts TEXT);
 CREATE TABLE IF NOT EXISTS workflow_tasks(id TEXT PRIMARY KEY, investigation_id TEXT, title TEXT, system TEXT, external_ref TEXT, status TEXT, payload_json TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS radar_issues(id TEXT PRIMARY KEY, data_json TEXT, score REAL, status TEXT, investigation_id TEXT, scan_id TEXT, detected_at TEXT);
+CREATE TABLE IF NOT EXISTS knowledge_documents(id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'database', updated_at TEXT NOT NULL, metadata_json TEXT);
+CREATE INDEX IF NOT EXISTS ix_knowledge_documents_updated ON knowledge_documents(updated_at);
+CREATE TABLE IF NOT EXISTS knowledge_document_files(document_id TEXT PRIMARY KEY REFERENCES knowledge_documents(id) ON DELETE CASCADE, file_data BLOB NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/pdf', filename TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS evaluation_results(id TEXT PRIMARY KEY, conversation_id TEXT, message_id TEXT, accuracy REAL, citation_correctness REAL, latency_ms REAL, details_json TEXT, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_eval_created ON evaluation_results(created_at);
 """
 
 

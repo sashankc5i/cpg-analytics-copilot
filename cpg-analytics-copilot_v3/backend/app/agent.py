@@ -304,6 +304,29 @@ def chat(user, message, conversation_id=None, request_id="-"):
     return {"conversation": {k: conv[k] for k in ("id", "title", "archived", "created_at")} | {"updated_at": now()}, "user_message": um, "assistant_message": am}
 
 
+def persist_document_chat(user, message, result, documents, conversation_id=None, request_id="-"):
+    """Persist document-only chat in the same conversation store as analytics chat."""
+    if conversation_id:
+        conv = q1("SELECT * FROM conversations WHERE id=? AND user_id=?", (conversation_id, user["id"]))
+        if not conv:
+            raise LookupError("Conversation not found.")
+    else:
+        stamp = now()
+        conv = {"id": uid("c_"), "user_id": user["id"], "title": message.strip()[:52] or "New conversation", "archived": 0,
+                "context_json": jd({}), "created_at": stamp, "updated_at": stamp}
+        x("INSERT INTO conversations VALUES(?,?,?,?,?,?,?)", (conv["id"], user["id"], conv["title"], 0, conv["context_json"], stamp, stamp))
+    stamp = now()
+    um = {"id": uid("m_"), "conversation_id": conv["id"], "role": "user", "content": message, "payload": None, "created_at": stamp}
+    x("INSERT INTO messages VALUES(?,?,?,?,?,?)", (um["id"], conv["id"], "user", message, None, stamp))
+    payload = {**result, "document_chat": True, "documents": [{k: d.get(k) for k in ("id", "title", "source", "updated_at")} for d in documents],
+               "compare_database": False, "request_id": request_id}
+    am = {"id": uid("m_"), "conversation_id": conv["id"], "role": "assistant", "content": result["answer"], "payload": payload, "created_at": now()}
+    x("INSERT INTO messages VALUES(?,?,?,?,?,?)", (am["id"], conv["id"], "assistant", am["content"], jd(payload), am["created_at"]))
+    x("UPDATE conversations SET updated_at=? WHERE id=?", (am["created_at"], conv["id"]))
+    audit(user, "chat", {"conversation": conv["id"], "mode": result.get("mode", "document"), "documents": [d["id"] for d in documents], "request_id": request_id})
+    return {"conversation": {k: conv[k] for k in ("id", "title", "archived", "created_at")} | {"updated_at": am["created_at"]}, "user_message": um, "assistant_message": am}
+
+
 def starter_suggestions():
     rows = q("SELECT data_json, score FROM radar_issues WHERE status='new' ORDER BY score DESC LIMIT 2")
     out = [f"Investigate: {jl(r['data_json'])['title']}" for r in rows]

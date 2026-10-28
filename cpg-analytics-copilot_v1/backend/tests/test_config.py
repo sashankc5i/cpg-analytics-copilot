@@ -24,8 +24,8 @@ def test_settings_loads_required_and_default_values(
     assert settings.app_version == "0.1.0"
 
     assert settings.cors_origin_list == [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
+        "http://localhost:5175",
+        "http://127.0.0.1:5175",
     ]
 
 
@@ -102,7 +102,7 @@ def test_cors_origin_list_strips_whitespace(
     monkeypatch.setenv(
         "CORS_ORIGINS",
         (
-            " http://localhost:5173, "
+            " http://localhost:5175, "
             "http://example.com "
         ),
     )
@@ -110,7 +110,7 @@ def test_cors_origin_list_strips_whitespace(
     settings = Settings()
 
     assert settings.cors_origin_list == [
-        "http://localhost:5173",
+        "http://localhost:5175",
         "http://example.com",
     ]
 
@@ -124,13 +124,13 @@ def test_cors_origin_list_ignores_empty_entries(
     )
     monkeypatch.setenv(
         "CORS_ORIGINS",
-        "http://localhost:5173,,",
+        "http://localhost:5175,,",
     )
 
     settings = Settings()
 
     assert settings.cors_origin_list == [
-        "http://localhost:5173",
+        "http://localhost:5175",
     ]
 
 
@@ -180,7 +180,7 @@ def test_cors_origins_rejects_blank_value(
 @pytest.mark.parametrize(
     "cors_origins",
     [
-        "localhost:5173",
+        "localhost:5175",
         "example.com",
         "random-value",
         "ftp://example.com",
@@ -206,11 +206,11 @@ def test_cors_origins_reject_invalid_origins(
 @pytest.mark.parametrize(
     "cors_origins",
     [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
+        "http://localhost:5175",
+        "http://127.0.0.1:5175",
         "https://example.com",
         (
-            "http://localhost:5173,"
+            "http://localhost:5175,"
             "https://example.com"
         ),
     ],

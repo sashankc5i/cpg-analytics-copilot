@@ -21,7 +21,12 @@ export const pctTxt = v => (v === null || v === undefined ? '–' : `${v > 0 ? '
 
 export function Pill({ kind, children }) { return <span className={`pill ${kind || ''}`}>{children ?? kind}</span> }
 export const Spinner = ({ text = 'Working…' }) => <div className="muted row small" style={{ padding: 12 }}><span className="pill info">●</span>{text}</div>
-export const ErrorBox = ({ e }) => e ? <div className="notice err">{String(e.message || e)}</div> : null
+export const ErrorBox = ({ e }) => {
+  if (!e) return null
+  const value = e.message ?? e
+  const message = typeof value === 'string' ? value : (() => { try { return JSON.stringify(value) } catch { return 'An unexpected error occurred.' } })()
+  return <div className="notice err">{message || 'An unexpected error occurred.'}</div>
+}
 
 export function Chart({ chart, height = 240 }) {
   if (!chart) return null
@@ -62,9 +67,9 @@ export function Table({ rows, cols, max = 50 }) {
 }
 
 export function Md({ text, onCite }) {
-  const t = (text || '').replace(/\[(E\d+)\]/g, '[$1](cite:$1)')
+  const t = (text || '').replace(/\[(E\d+)\]/g, '[$1](cite:$1)').replace(/\[DocID:([^\]]+)\]/g, '[DocID:$1](#doc-$1)')
   return <div className="md"><ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={u => u}
-    components={{ a: ({ href, children }) => href?.startsWith('cite:') ? <button className="cite" onClick={() => onCite?.(href.slice(5))}>{children}</button> : <a href={href} target="_blank" rel="noreferrer">{children}</a> }}>{t}</ReactMarkdown></div>
+    components={{ a: ({ href, children }) => href?.startsWith('cite:') ? <button className="cite" onClick={() => onCite?.(href.slice(5))}>{children}</button> : href?.startsWith('#doc-') ? <a className="cite" href={href}>{children}</a> : <a href={href} target="_blank" rel="noreferrer">{children}</a> }}>{t}</ReactMarkdown></div>
 }
 
 export function Trust({ freshness, dq = [], policy, warnings = [] }) {

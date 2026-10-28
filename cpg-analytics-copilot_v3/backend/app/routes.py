@@ -9,7 +9,7 @@ from urllib.parse import quote
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import agent, governance, investigation as inv_mod, memory, security, telemetry, tools
 from . import semantic as S
@@ -121,6 +121,8 @@ def list_tools(u=Depends(current_user)):
 class ChatIn(BaseModel):
     message: str
     conversation_id: str | None = None
+    document_ids: list[str] = Field(default_factory=list, max_length=20)
+    compare_database: bool = True
 
 
 @api.post("/chat")
@@ -128,7 +130,25 @@ def chat(b: ChatIn, u=Depends(require("chat"))):
     if not b.message.strip():
         raise HTTPException(400, "Message is empty.")
     try:
-        return agent.chat(u, b.message.strip()[:2000], b.conversation_id, request_id_var.get())
+        if b.document_ids and not b.compare_database:
+            from .document_processing import answer_query, fetch_documents
+            documents = fetch_documents(b.document_ids)
+            result = answer_query(b.message.strip()[:2000], documents)
+            return agent.persist_document_chat(u, b.message.strip()[:2000], result, documents, b.conversation_id, request_id_var.get())
+        response = agent.chat(u, b.message.strip()[:2000], b.conversation_id, request_id_var.get())
+        if b.document_ids:
+            from .document_processing import answer_query, fetch_documents
+            documents = fetch_documents(b.document_ids)
+            database_evidence = response["assistant_message"].get("payload", {}).get("evidence", []) if b.compare_database else []
+            document_result = answer_query(b.message.strip()[:2000], documents, database_evidence=database_evidence)
+            assistant = response["assistant_message"]
+            assistant["content"] = document_result["answer"]
+            assistant["payload"] = {**(assistant.get("payload") or {}), **document_result, "document_chat": True,
+                                     "documents": [{k: d.get(k) for k in ("id", "title", "source", "updated_at")} for d in documents],
+                                     "compare_database": b.compare_database}
+            from .db import jd, x
+            x("UPDATE messages SET content=?, payload_json=? WHERE id=?", (assistant["content"], jd(assistant["payload"]), assistant["id"]))
+        return response
     except LookupError as e:
         raise HTTPException(404, str(e))
 

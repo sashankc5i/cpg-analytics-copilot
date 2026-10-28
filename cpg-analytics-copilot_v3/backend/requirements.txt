@@ -9,4 +9,9 @@ python-dotenv
 httpx
 jsonschema
 pytest
+pdfplumber
+pymupdf
+pytesseract
+pillow
+python-multipart
 # Optional: pyodbc  (only for Azure SQL via ANALYTICS_DB_URL=mssql+pyodbc://...)

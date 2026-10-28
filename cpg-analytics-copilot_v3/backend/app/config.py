@@ -23,7 +23,10 @@ class Settings:
     demo_password = os.getenv("DEMO_PASSWORD", "demo123")
     workflow_webhook = os.getenv("WORKFLOW_WEBHOOK_URL", "")
     bi_url = os.getenv("BI_DASHBOARD_URL", "https://app.powerbi.com/groups/me/reports/REPORT_ID")
-    cors = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")]
+    cors = [o.strip().rstrip("/") for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5175,http://localhost:5173,http://127.0.0.1:5175,http://127.0.0.1:5173",
+    ).split(",") if o.strip()]
     currency = os.getenv("CURRENCY_SYMBOL", "$")
     max_tool_rounds = int(os.getenv("MAX_TOOL_ROUNDS", "6"))
     radar_interval_min = int(os.getenv("RADAR_INTERVAL_MIN", "0"))

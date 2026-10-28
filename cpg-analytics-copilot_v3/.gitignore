@@ -442,6 +442,8 @@ backend/temp/
 
 !.gitkeep
 !.env.example
+!frontend/public/sample-documents/
+!frontend/public/sample-documents/*.pdf
 
 
 
